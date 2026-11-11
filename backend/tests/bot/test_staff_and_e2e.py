@@ -71,7 +71,7 @@ async def test_full_scenario_bot(bot, container, fake_tg) -> None:
     await bot.click(64, "wd:net:TRC20")
     await bot.send(64, TRON_TO)
     await bot.send(64, "12.67")
-    await bot.click(64, "wd:confirm", message_id=9002)
+    await bot.click(64, "wd:confirm", message_id=fake_tg.next_message_id)
     async with container.db() as s:
         w = (await s.execute(select(Withdrawal))).scalar_one()
     assert w.amount_to_send == Decimal("8.67")

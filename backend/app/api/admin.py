@@ -4,17 +4,18 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from app.api import serializers as ser
-from app.api.deps import StaffAuth, admin_auth, client_ip, container, staff_auth
+from app.api.deps import MAX_ID, StaffAuth, admin_auth, client_ip, container, staff_auth
 from app.container import Container
 from app.domain.enums import AuthMethod, Network, OrderStatus, StaffRole, UserStatus, WithdrawalStatus
 from app.domain.errors import Forbidden, NotFound, ServiceError
+from app.domain.text import escape_html
 from app.domain.timefmt import MSK
 from app.models import AddressBlacklist, AntifraudEvent, AuditLog, LedgerEntry, Order, Staff, User, Withdrawal
 from app.services import antifraud, audit, auth, ledger, notify, orders, rates, stats, withdrawals
@@ -22,6 +23,8 @@ from app.services import settings as settings_svc
 from app.services import staff as staff_svc
 from app.services import users as users_svc
 from app.services.settings_meta import settings_meta
+
+Id = Annotated[int, Path(ge=1, le=MAX_ID)]
 
 router = APIRouter(prefix="/api/admin")
 
@@ -38,16 +41,25 @@ def _cursor(cursor: str | None) -> int | None:
     if cursor is None or cursor == "":
         return None
     try:
-        return int(cursor)
+        value = int(cursor)
     except ValueError:
         raise ServiceError("bad_cursor", "Некорректный курсор") from None
+    if not 0 < value <= MAX_ID:
+        raise ServiceError("bad_cursor", "Некорректный курсор")
+    return value
 
 
-def _dec(value: str, field: str) -> Decimal:
+def _dec(value: str, field: str, *, places: int = 6, max_abs: Decimal = Decimal(10) ** 12) -> Decimal:
+    """Finite decimal with at most `places` decimals and |value| < max_abs (fits NUMERIC(20,6))."""
     try:
-        return Decimal(value.replace(",", ".").strip())
-    except (InvalidOperation, AttributeError):
+        d = Decimal(value.replace(",", ".").strip())
+    except (InvalidOperation, AttributeError, ValueError):
         raise ServiceError("invalid_number", f"Некорректное число в поле {field}") from None
+    if not d.is_finite() or abs(d) >= max_abs or d != d.quantize(Decimal(1).scaleb(-places)):
+        raise ServiceError(
+            "invalid_number", f"Некорректное число в поле {field}: не больше {places} знаков после точки"
+        )
+    return d
 
 
 # --- me ------------------------------------------------------------------------------
@@ -77,6 +89,11 @@ class HashIn(BaseModel):
 
 class ReasonIn(BaseModel):
     reason: str = Field(max_length=1000)
+
+
+class ForceIn(BaseModel):
+    comment: str = Field(max_length=1000)
+    tx_hash: str | None = Field(None, max_length=200)
 
 
 class CommentIn(BaseModel):
@@ -151,7 +168,7 @@ async def list_withdrawals(
 
 @router.get("/withdrawals/{withdrawal_id}")
 async def get_withdrawal(
-    withdrawal_id: int, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    withdrawal_id: Id, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     async with c.db() as session:
         w = await session.get(Withdrawal, withdrawal_id)
@@ -162,21 +179,21 @@ async def get_withdrawal(
 
 @router.post("/withdrawals/{withdrawal_id}/take")
 async def take_withdrawal(
-    withdrawal_id: int, request: Request, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    withdrawal_id: Id, request: Request, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     return await _withdrawal_view(c, await withdrawals.take(c, withdrawal_id, sa.actor, client_ip(request)))
 
 
 @router.post("/withdrawals/{withdrawal_id}/release")
 async def release_withdrawal(
-    withdrawal_id: int, request: Request, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    withdrawal_id: Id, request: Request, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     return await _withdrawal_view(c, await withdrawals.release_to_queue(c, withdrawal_id, sa.actor, client_ip(request)))
 
 
 @router.post("/withdrawals/{withdrawal_id}/submit-hash")
 async def submit_hash(
-    withdrawal_id: int,
+    withdrawal_id: Id,
     body: HashIn,
     request: Request,
     sa: StaffAuth = Depends(staff_auth),
@@ -188,7 +205,7 @@ async def submit_hash(
 
 @router.post("/withdrawals/{withdrawal_id}/reject")
 async def reject_withdrawal(
-    withdrawal_id: int,
+    withdrawal_id: Id,
     body: ReasonIn,
     request: Request,
     sa: StaffAuth = Depends(staff_auth),
@@ -201,21 +218,23 @@ async def reject_withdrawal(
 
 @router.post("/withdrawals/{withdrawal_id}/force-complete")
 async def force_complete(
-    withdrawal_id: int,
-    body: CommentIn,
+    withdrawal_id: Id,
+    body: ForceIn,
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
     c: Container = Depends(container),
 ) -> dict[str, Any]:
-    w = await withdrawals.force_complete(c, withdrawal_id, sa.actor, body.comment, client_ip(request))
+    w = await withdrawals.force_complete(
+        c, withdrawal_id, sa.actor, body.comment, client_ip(request), tx_hash=body.tx_hash or None
+    )
     return await _withdrawal_view(c, w)
 
 
 @router.post("/withdrawals/{withdrawal_id}/recheck")
 async def recheck(
-    withdrawal_id: int, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    withdrawal_id: Id, request: Request, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
-    await withdrawals.recheck(c, withdrawal_id, sa.actor)
+    await withdrawals.recheck(c, withdrawal_id, sa.actor, client_ip(request))
     async with c.db() as session:
         w = await session.get(Withdrawal, withdrawal_id)
     assert w is not None
@@ -273,7 +292,7 @@ async def list_orders(
 
 @router.get("/orders/{order_id}")
 async def get_order(
-    order_id: int, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    order_id: Id, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     async with c.db() as session:
         o = await session.get(Order, order_id)
@@ -287,7 +306,7 @@ async def get_order(
 
 @router.post("/orders/{order_id}/resolve-review")
 async def resolve_review(
-    order_id: int,
+    order_id: Id,
     body: ResolveReviewIn,
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
@@ -301,7 +320,7 @@ async def resolve_review(
 
 @router.post("/orders/{order_id}/simulate-payment")
 async def simulate_payment(
-    order_id: int,
+    order_id: Id,
     request: Request,
     body: SimulateIn | None = None,
     sa: StaffAuth = Depends(admin_auth),
@@ -321,9 +340,9 @@ async def simulate_payment(
 
 class UserPatch(BaseModel):
     markup_pct: str | None = None
-    order_min_rub: int | None = Field(None, ge=1)
-    order_max_rub: int | None = Field(None, ge=1)
-    daily_turnover_limit_rub: int | None = Field(None, ge=1)
+    order_min_rub: int | None = Field(None, ge=1, le=1_000_000_000)
+    order_max_rub: int | None = Field(None, ge=1, le=1_000_000_000)
+    daily_turnover_limit_rub: int | None = Field(None, ge=1, le=1_000_000_000)
     clear_limits: bool = False
     af_enabled: bool | None = None
     is_suspicious: bool | None = None
@@ -371,7 +390,7 @@ async def list_users(
 
 @router.get("/users/{user_id}")
 async def get_user(
-    user_id: int, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    user_id: Id, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     async with c.db() as session:
         u = await users_svc.get(session, user_id)
@@ -394,7 +413,7 @@ async def get_user(
 
 @router.get("/users/{user_id}/stats")
 async def user_stats(
-    user_id: int, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    user_id: Id, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     async with c.db() as session:
         u = await users_svc.get(session, user_id)
@@ -404,7 +423,7 @@ async def user_stats(
 
 @router.get("/users/{user_id}/stats/daily")
 async def user_stats_daily(
-    user_id: int, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+    user_id: Id, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     async with c.db() as session:
         await users_svc.get(session, user_id)
@@ -414,7 +433,7 @@ async def user_stats_daily(
 
 @router.get("/users/{user_id}/ledger")
 async def user_ledger(
-    user_id: int,
+    user_id: Id,
     cursor: str | None = None,
     limit: int = Query(50, ge=1, le=PAGE_MAX),
     sa: StaffAuth = Depends(staff_auth),
@@ -431,7 +450,7 @@ async def user_ledger(
 
 @router.patch("/users/{user_id}")
 async def patch_user(
-    user_id: int,
+    user_id: Id,
     body: UserPatch,
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
@@ -441,7 +460,7 @@ async def patch_user(
         u = await users_svc.lock(session, user_id)
         before = ser.user_admin(u)
         if body.markup_pct is not None:
-            markup = _dec(body.markup_pct, "markup_pct")
+            markup = _dec(body.markup_pct, "markup_pct", places=2, max_abs=Decimal(100))
             if not (Decimal(0) <= markup < Decimal(100)) or markup != markup.quantize(Decimal("0.01")):
                 raise ServiceError("invalid_markup", "Наценка должна быть от 0 до 99.99 % с точностью 0.01.")
             u.markup_pct = markup
@@ -482,7 +501,7 @@ async def patch_user(
 
 @router.post("/users/{user_id}/unblock-orders")
 async def unblock_orders(
-    user_id: int,
+    user_id: Id,
     body: CommentIn,
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
@@ -493,7 +512,7 @@ async def unblock_orders(
 
 @router.post("/users/{user_id}/block-orders")
 async def block_orders(
-    user_id: int,
+    user_id: Id,
     body: CommentIn,
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
@@ -504,7 +523,7 @@ async def block_orders(
 
 @router.post("/users/{user_id}/adjust-balance")
 async def adjust_balance(
-    user_id: int,
+    user_id: Id,
     body: AdjustIn,
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
@@ -527,11 +546,11 @@ async def adjust_balance(
             comment=body.comment,
             ip=client_ip(request),
         )
-        who = f"@{sa.staff.tg_username}" if sa.staff.tg_username else f"staff #{sa.staff.id}"
+        who = f"@{escape_html(sa.staff.tg_username)}" if sa.staff.tg_username else f"staff #{sa.staff.id}"
         await notify.alert(
             session,
             f"✍️ Ручная корректировка баланса клиента id {user_id}: {ser.num(delta)} USDT ({who}). "
-            f"Комментарий: {body.comment}",
+            f"Комментарий: {escape_html(body.comment)}",
             now=now,
         )
         return {"user": ser.user_admin(u), "entry": ser.ledger_entry(entry)}
@@ -595,7 +614,7 @@ async def af_events(
 
 @router.post("/antifraud/events/{event_id}/resolve")
 async def af_resolve(
-    event_id: int, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
+    event_id: Id, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     return ser.af_event(await antifraud.resolve_event(c, event_id, sa.actor, client_ip(request)))
 
@@ -783,7 +802,7 @@ async def add_blacklist(
 
 @router.delete("/blacklist/{entry_id}")
 async def delete_blacklist(
-    entry_id: int, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
+    entry_id: Id, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
 ) -> dict[str, bool]:
     async with c.db.begin() as session:
         row = await session.get(AddressBlacklist, entry_id)
@@ -836,7 +855,7 @@ async def add_staff(
 
 @router.patch("/staff/{staff_id}")
 async def patch_staff(
-    staff_id: int,
+    staff_id: Id,
     body: StaffPatch,
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
@@ -848,7 +867,7 @@ async def patch_staff(
 
 @router.delete("/staff/{staff_id}")
 async def delete_staff(
-    staff_id: int, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
+    staff_id: Id, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
 ) -> dict[str, bool]:
     await staff_svc.remove(c, sa.actor, staff_id, client_ip(request))
     return {"ok": True}

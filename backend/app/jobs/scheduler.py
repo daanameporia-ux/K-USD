@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
+from app.domain.text import escape_html
 from app.logging import get_logger
 from app.services import notify
 
@@ -90,8 +91,14 @@ class Scheduler:
                 st.runs += 1
                 return True
             finally:
-                await conn.scalar(select(func.pg_advisory_unlock(job.lock_key)))
-                await conn.commit()
+                try:
+                    await conn.scalar(select(func.pg_advisory_unlock(job.lock_key)))
+                    await conn.commit()
+                except Exception:
+                    # the lock is session-level: a broken connection releases it when it is closed
+                    log.warning("job_unlock_failed", job=job.name)
+                    with suppress(Exception):
+                        await conn.invalidate()
 
     async def _alert_failure(self, name: str, error: str) -> None:
         now = self.c.clock.now()
@@ -99,7 +106,9 @@ class Scheduler:
             return
         try:
             async with self.c.db.begin() as session:
-                await notify.alert(session, f"❗ Фоновая задача <b>{name}</b> упала: {error[:200]}", now=now)
+                await notify.alert(
+                    session, f"❗ Фоновая задача <b>{escape_html(name)}</b> упала: {escape_html(error[:200])}", now=now
+                )
         except Exception:
             log.exception("job_alert_failed", job=name)
 
@@ -114,8 +123,20 @@ class Scheduler:
 
     async def _loop(self, job: Job) -> None:
         while not self._stop.is_set():
-            await self.run_once(job)
-            delay = await self._interval(job)
+            try:
+                await self.run_once(job)
+                delay = await self._interval(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # e.g. the database is restarting: connect/lock failed. Never let the loop die.
+                st = self.state[job.name]
+                st.last_error = f"{type(exc).__name__}: {exc}"[:500]
+                st.last_error_at = self.c.clock.now()
+                log.exception("job_loop_error", job=job.name)
+                with suppress(Exception):
+                    await self._alert_failure(job.name, st.last_error)
+                delay = 5.0
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
 

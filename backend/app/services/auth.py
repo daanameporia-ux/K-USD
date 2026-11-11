@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -122,6 +123,20 @@ async def revoke_all(session: AsyncSession, subject_type: SubjectType, subject_i
     )
 
 
+async def revoke_password_sessions(session: AsyncSession, staff_id: int) -> None:
+    """Changing web credentials ends existing browser sessions (the Telegram session stays)."""
+    await session.execute(
+        update(AuthSession)
+        .where(
+            AuthSession.subject_type == SubjectType.staff,
+            AuthSession.subject_id == staff_id,
+            AuthSession.auth_method == AuthMethod.password,
+            AuthSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=func.now())
+    )
+
+
 async def cleanup(session: AsyncSession, now: datetime) -> int:
     result = await session.execute(delete(AuthSession).where(AuthSession.expires_at < now - timedelta(days=1)))
     await session.execute(delete(LoginAttempt).where(LoginAttempt.created_at < now - timedelta(days=1)))
@@ -194,13 +209,18 @@ async def password_login(
     now: datetime,
 ) -> LoginResult | None:
     """Returns None on bad credentials (the caller commits the failure record and answers generically)."""
-    login_norm = (login or "").strip().lower()
+    login_norm = (login or "").strip().lower()[:100]
+    # Serialize attempts per login and per IP for the whole transaction, so parallel requests cannot all pass
+    # the failure counter before the first failure is recorded. Fixed order (login, then IP): no deadlocks.
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext("login:" + login_norm))))
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext("ip:" + ip))))
     if await _too_many_failures(session, login_norm, ip, now):
         raise ServiceError("too_many_attempts", MSG_TOO_MANY, status=429)
     staff: Staff | None = (
         await session.execute(select(Staff).where(func.lower(Staff.login) == login_norm).with_for_update())
     ).scalar_one_or_none()
-    ok = check_password(staff.password_hash if staff else None, password)
+    # argon2 is CPU-bound (~0.1 s): run it off the event loop so the bot and callbacks are not blocked
+    ok = await asyncio.to_thread(check_password, staff.password_hash if staff else None, password)
     if staff is None or not ok or not staff.is_active or not staff.totp_enabled or not staff.totp_secret:
         session.add(LoginAttempt(login=login_norm, ip=ip, created_at=now))
         return None
@@ -241,7 +261,8 @@ async def set_web_credentials(
     if taken is not None:
         raise ServiceError("login_taken", "Этот логин уже занят.", status=409)
     staff.login = login
-    staff.password_hash = hash_password(password)
+    staff.password_hash = await asyncio.to_thread(hash_password, password)
+    await revoke_password_sessions(session, staff.id)
     await audit.write(
         session,
         action="staff.set_web_credentials",
@@ -264,6 +285,7 @@ async def totp_setup(session: AsyncSession, staff: Staff) -> TotpSetup:
     secret = pyotp.random_base32()
     staff.totp_secret = secret
     staff.totp_enabled = False
+    await revoke_password_sessions(session, staff.id)
     staff.totp_last_step = None
     name = staff.login or (f"@{staff.tg_username}" if staff.tg_username else f"staff-{staff.id}")
     uri = pyotp.TOTP(secret).provisioning_uri(name=name, issuer_name=TOTP_ISSUER)

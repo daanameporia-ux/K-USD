@@ -6,7 +6,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from app.telegram.client import TelegramClient
+from app.logging import get_logger
+from app.telegram.client import TelegramApiError, TelegramClient
 from app.telegram.fsm import FSM
 from app.telegram.types import CallbackQuery, Message, Update
 
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from app.models import User
 
 Handler = Callable[["Ctx"], Awaitable[None]]
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -60,7 +63,11 @@ class Ctx:
         if cb is None or self.callback_answered:
             return
         self.callback_answered = True
-        await self.tg.answer_callback_query(cb.id, text, alert)
+        try:
+            await self.tg.answer_callback_query(cb.id, text, alert)
+        except TelegramApiError as exc:
+            # cosmetic only (e.g. "query is too old" after a slow provider call): never abort the handler
+            log.info("callback_answer_failed", code=exc.code, description=exc.description[:100])
 
     async def edit(self, text: str, markup: dict[str, Any] | None = None) -> None:
         cb = self.update.callback_query

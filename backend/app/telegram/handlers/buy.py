@@ -106,6 +106,7 @@ async def cb_confirm(ctx: Ctx) -> None:
         await ctx.answer("Кнопка устарела")
         return
     message_id = ctx.callback.message.message_id
+    await ctx.answer("Создаём заявку…")  # answer before the (possibly slow) provider call
     try:
         result = await orders.create(
             ctx.container,
@@ -117,13 +118,11 @@ async def cb_confirm(ctx: Ctx) -> None:
             tg_chat_id=ctx.chat_id,
         )
     except orders.PriceChanged as exc:
-        await ctx.answer()
         await ctx.edit(texts.BUY_PRICE_CHANGED + preview_text(exc.quote), preview_markup(exc.quote))
         return
     if not result.created:
-        await ctx.answer(texts.BUY_ALREADY_CREATED)
+        await ctx.reply(texts.BUY_ALREADY_CREATED)
         return
-    await ctx.answer()
     await ctx.tg.edit_message_reply_markup(ctx.chat_id, message_id)
     order = result.order
     if order.status != OrderStatus.pending:

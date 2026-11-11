@@ -41,6 +41,10 @@ export function Withdraw() {
         address,
         amount: value.replace(",", "."),
       });
+      // New parameters → a new attempt: the key of a failed earlier attempt is never sent with another request.
+      if (!preview || preview.network !== pv.network || preview.address !== pv.address || preview.amount !== pv.amount) {
+        attempt.current.done();
+      }
       setPreview(pv);
       setStep("preview");
     } catch (e) {
@@ -181,7 +185,13 @@ export function Withdraw() {
           </Notice>
           {error && <Notice tone="bad">{error}</Notice>}
           <div className="btn-row">
-            <button className="btn btn-secondary" onClick={() => setStep("amount")}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                setError(null);
+                setStep("amount");
+              }}
+            >
               Изменить
             </button>
             <AsyncButton
@@ -189,11 +199,9 @@ export function Withdraw() {
                 if (!(await confirmAction(`Вывести ${preview.amount_to_send} USDT на ${preview.address}?`))) return;
                 setError(null);
                 try {
-                  const w = await api.post<Withdrawal>(
-                    "/api/client/withdrawals",
-                    { network: preview.network, address: preview.address, amount: preview.amount },
-                    attempt.current.key,
-                  );
+                  const body = { network: preview.network, address: preview.address, amount: preview.amount };
+                  // same key only when resending exactly this request
+                  const w = await api.post<Withdrawal>("/api/client/withdrawals", body, attempt.current.keyFor(body));
                   attempt.current.done();
                   haptic("success");
                   setResult(w);

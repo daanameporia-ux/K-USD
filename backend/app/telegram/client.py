@@ -9,7 +9,10 @@ from typing import Any
 
 import httpx
 
+from app.domain.text import escape_html
 from app.logging import get_logger
+
+__all__ = ["BotBlockedError", "TelegramApiError", "TelegramClient", "TelegramNetworkError", "escape_html"]
 
 log = get_logger(__name__)
 
@@ -35,11 +38,6 @@ class BotBlockedError(TelegramApiError):
 class TelegramNetworkError(TelegramApiError):
     def __init__(self, method: str, detail: str) -> None:
         super().__init__(0, f"network error: {detail}", None, method)
-
-
-def escape_html(value: object) -> str:
-    text = "" if value is None else str(value)
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
 def _is_not_modified(description: str) -> bool:

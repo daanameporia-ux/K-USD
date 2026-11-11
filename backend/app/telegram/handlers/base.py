@@ -64,9 +64,10 @@ def service_errors(fn: Callable[[Ctx], Awaitable[None]]) -> Handler:
         try:
             await fn(ctx)
         except ServiceError as exc:
-            if ctx.callback is not None:
+            if ctx.callback is not None and not ctx.callback_answered:
                 await ctx.answer(exc.message[:190], alert=True)
             else:
+                # plain message, or the callback was already answered: show the error as a message
                 await ctx.reply(exc.message)
 
     return wrapper

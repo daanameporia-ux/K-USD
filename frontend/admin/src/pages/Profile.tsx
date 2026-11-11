@@ -115,13 +115,27 @@ function Totp({ staff, onDone }: { staff: Staff; onDone: () => Promise<void> }) 
   const [code, setCode] = useState("");
   const action = useAction();
 
+  // The backend replaces the secret right away and turns TOTP off until the new code is confirmed.
   async function start() {
-    if (staff.totp_enabled && !(await confirmAction("Перевыпустить TOTP? Старый код перестанет работать после подтверждения.")))
+    if (
+      staff.totp_enabled &&
+      !(await confirmAction(
+        "Перевыпустить TOTP? Старый код перестанет работать сразу, и до подтверждения нового кода вход в браузере будет недоступен.",
+      ))
+    )
       return;
-    await action.run(async () => {
+    const ok = await action.run(async () => {
       setSetup(await api.post<TotpSetup>(adminPath("/profile/totp/setup")));
       setCode("");
     });
+    if (ok) await onDone(); // the profile now shows TOTP as not enabled
+  }
+
+  async function cancel() {
+    setSetup(null);
+    setCode("");
+    action.clear();
+    await onDone(); // TOTP stays off until a new setup is confirmed
   }
 
   async function confirm() {
@@ -151,6 +165,10 @@ function Totp({ staff, onDone }: { staff: Staff; onDone: () => Promise<void> }) 
         )}
         {setup && (
           <div className="stack">
+            <Notice tone="warn">
+              Старый код уже не действует. Пока вы не подтвердите новый код, TOTP выключен и вход в админку из браузера
+              недоступен.
+            </Notice>
             <img className="qr" src={`data:image/png;base64,${setup.qr_png_base64}`} alt="QR-код для приложения-аутентификатора" />
             <div className="copy-block">
               <div className="muted small">Секрет (если QR не сканируется)</div>
@@ -169,9 +187,9 @@ function Totp({ staff, onDone }: { staff: Staff; onDone: () => Promise<void> }) 
               <AsyncButton onClick={confirm} disabled={!/^\d{6}$/.test(code)}>
                 Подтвердить
               </AsyncButton>
-              <button className="btn btn-ghost" onClick={() => setSetup(null)}>
+              <AsyncButton variant="ghost" onClick={cancel}>
                 Отмена
-              </button>
+              </AsyncButton>
             </div>
           </div>
         )}

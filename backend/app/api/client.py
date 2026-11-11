@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.api import serializers as ser
-from app.api.deps import MONEY_LIMIT, ClientAuth, client_auth, container, idempotency_key, limit
+from app.api.deps import MAX_ID, MONEY_LIMIT, ClientAuth, client_auth, container, idempotency_key, limit
 from app.container import Container
 from app.domain.amounts import AmountError, parse_rub, parse_usdt
 from app.domain.enums import Network, OrderSource, OrderStatus
@@ -21,6 +21,8 @@ from app.services import history, ledger, orders, rates, users, withdrawals
 from app.services import settings as settings_svc
 from app.services.labels import NETWORK
 from app.services.qr import qr_png
+
+Id = Annotated[int, Path(ge=1, le=MAX_ID)]
 
 router = APIRouter(prefix="/api/client")
 
@@ -58,7 +60,7 @@ def _parse_usdt(value: str) -> Decimal:
         raise ServiceError("invalid_amount", exc.message) from None
 
 
-async def _me(c: Container, user_id: int) -> dict[str, Any]:
+async def _me(c: Container, user_id: Id) -> dict[str, Any]:
     now = c.clock.now()
     async with c.db() as session:
         user = await users.get(session, user_id)
@@ -177,14 +179,14 @@ async def order_active(a: ClientAuth = Depends(client_auth), c: Container = Depe
 
 @router.get("/orders/{order_id}")
 async def order_get(
-    order_id: int, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
+    order_id: Id, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     async with c.db() as session:
         return ser.order(await orders.get_for_user(session, a.user.id, order_id))
 
 
 @router.get("/orders/{order_id}/qr.png")
-async def order_qr(order_id: int, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)) -> Response:
+async def order_qr(order_id: Id, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)) -> Response:
     async with c.db() as session:
         o = await orders.get_for_user(session, a.user.id, order_id)
     if not o.qr_url:
@@ -194,7 +196,7 @@ async def order_qr(order_id: int, a: ClientAuth = Depends(client_auth), c: Conta
 
 @router.post("/orders/{order_id}/cancel")
 async def order_cancel(
-    order_id: int, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
+    order_id: Id, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     return ser.order(await orders.cancel(c, a.user.id, order_id))
 
@@ -243,7 +245,7 @@ async def wd_create(
 
 @router.post("/withdrawals/{withdrawal_id}/cancel")
 async def wd_cancel(
-    withdrawal_id: int, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
+    withdrawal_id: Id, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     return ser.withdrawal(await withdrawals.cancel(c, a.user.id, withdrawal_id))
 

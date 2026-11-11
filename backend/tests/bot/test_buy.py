@@ -52,11 +52,12 @@ async def test_full_purchase_flow(bot, container, fake_tg) -> None:
     assert buttons[1]["callback_data"].startswith("ord:cancel:")
     assert preview_msg_id
 
+    qr_message_id = fake_tg.next_message_id
     # double press on the same preview -> still one order
     await bot.click(30, "buy:confirm:1000:9.50", message_id=msg_id)
-    assert fake_tg.of("answerCallbackQuery")[-1].params["text"] == texts.BUY_ALREADY_CREATED
+    assert bot.last(30) == texts.BUY_ALREADY_CREATED
     (order,) = await all_orders(container)
-    assert order.status == OrderStatus.pending and order.tg_message_id == fake_tg.next_message_id
+    assert order.status == OrderStatus.pending and order.tg_message_id == qr_message_id
 
     staff = await make_staff(container)
     await orders.simulate_payment(container, order.id, amount_rub=None, staff_id=staff.id)

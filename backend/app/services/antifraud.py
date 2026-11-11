@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain import antifraud as rules
 from app.domain.enums import FINISHED_ORDER_STATUSES, AfSeverity, LedgerType, OrderStatus, WithdrawalStatus
 from app.domain.errors import NotFound, ServiceError
+from app.domain.text import escape_html
 from app.domain.timefmt import MSK, fmt_time, msk_date
 from app.models import AntifraudEvent, LedgerEntry, Order, User, Withdrawal
 from app.services import audit, notify
@@ -49,6 +50,12 @@ def main_params(biz: BizSettings) -> rules.MainParams:
         streak_suspicious=biz.af_streak_suspicious,
         streak_block=biz.af_streak_block,
     )
+
+
+def _ceil_minute(moment: datetime) -> datetime:
+    """Round up so that "after HH:MM" is never earlier than the real moment."""
+    floor = moment.replace(second=0, microsecond=0)
+    return floor if floor == moment else floor + timedelta(minutes=1)
 
 
 def msk_day_start(now: datetime) -> datetime:
@@ -104,7 +111,7 @@ async def check_order_creation(
         if until is not None:
             raise ServiceError(
                 "rate_limited",
-                f"Слишком много заявок. Следующую можно создать после {fmt_time(until)} (МСК).",
+                f"Слишком много заявок. Следующую можно создать после {fmt_time(_ceil_minute(until))} (МСК).",
                 status=429,
             )
     if biz.b3_enabled:
@@ -115,7 +122,7 @@ async def check_order_creation(
         if until is not None:
             raise ServiceError(
                 "cooldown",
-                f"После нескольких неоплаченных заявок действует пауза до {fmt_time(until)} (МСК).",
+                f"После нескольких неоплаченных заявок действует пауза до {fmt_time(_ceil_minute(until))} (МСК).",
                 status=429,
             )
     if amount_rub is None:
@@ -142,8 +149,10 @@ async def check_order_creation(
             raise ServiceError("daily_limit", msg)
 
 
-async def _has_open_event(session: AsyncSession, user_id: int | None, rule: str) -> bool:
+async def _has_open_event(session: AsyncSession, user_id: int | None, rule: str, key: str | None = None) -> bool:
     stmt = select(AntifraudEvent.id).where(AntifraudEvent.rule == rule, AntifraudEvent.resolved_at.is_(None))
+    if key is not None:
+        stmt = stmt.where(AntifraudEvent.details["key"].astext == key)
     stmt = (
         stmt.where(AntifraudEvent.user_id == user_id)
         if user_id is not None
@@ -157,32 +166,57 @@ def _who(user: User) -> str:
 
 
 async def record(
-    session: AsyncSession, user: User | None, trigger: rules.Trigger, now: datetime, extra: str = ""
+    session: AsyncSession,
+    user: User | None,
+    trigger: rules.Trigger,
+    now: datetime,
+    extra: str = "",
+    *,
+    key: str | None = None,
+    unchanged: bool = True,
 ) -> AntifraudEvent | None:
-    """Store an event and alert staff unless the same rule already has an unresolved event."""
+    """Store an event and alert staff, unless the situation has not changed since an unresolved event.
+
+    "Unchanged" means: an unresolved event of the same rule with the same situation key exists (`key`, e.g. the
+    shared address for B4 or the withdrawal for B12) and its effect is still in place (`unchanged`, e.g. the
+    user is still flagged — if an admin cleared the flag, a repeated trigger is a new situation).
+    """
     user_id = user.id if user is not None else None
-    if await _has_open_event(session, user_id, trigger.rule):
+    if unchanged and await _has_open_event(session, user_id, trigger.rule, key):
         return None
+    details = {**trigger.details, "key": key} if key is not None else trigger.details
     event = AntifraudEvent(
-        user_id=user_id, rule=trigger.rule, severity=trigger.severity, details=trigger.details, created_at=now
+        user_id=user_id, rule=trigger.rule, severity=trigger.severity, details=details, created_at=now
     )
     session.add(event)
     await session.flush()
     title = RULE_TITLES.get(trigger.rule, trigger.rule)
-    who = f" клиент {_who(user)} (id {user.id})" if user is not None else ""
+    who = f" клиент {escape_html(_who(user))} (id {user.id})" if user is not None else ""
     icon = "⛔" if trigger.severity == AfSeverity.block else "⚠️"
-    await notify.alert(session, f"{icon} Антифрод {trigger.rule} «{title}»:{who}. {extra}".strip(), now=now)
+    await notify.alert(
+        session, f"{icon} Антифрод {trigger.rule} «{title}»:{who}. {escape_html(extra)}".strip(), now=now
+    )
     return event
 
 
-async def _apply(session: AsyncSession, user: User, trigger: rules.Trigger, now: datetime) -> None:
+async def _apply(
+    session: AsyncSession, user: User, trigger: rules.Trigger, now: datetime, key: str | None = None
+) -> None:
+    if trigger.severity == AfSeverity.block:
+        in_effect = not user.can_create_orders
+    elif trigger.severity == AfSeverity.suspicious:
+        in_effect = user.is_suspicious
+    else:
+        in_effect = True
     if trigger.severity == AfSeverity.block:
         if user.can_create_orders:
             user.can_create_orders = False
             user.orders_block_reason = f"{trigger.rule}: {RULE_TITLES.get(trigger.rule, '')}"
     elif trigger.severity == AfSeverity.suspicious:
         user.is_suspicious = True
-    await record(session, user, trigger, now, json.dumps(trigger.details, ensure_ascii=False))
+    await record(
+        session, user, trigger, now, json.dumps(trigger.details, ensure_ascii=False), key=key, unchanged=in_effect
+    )
 
 
 def _payer_key(info: dict[str, Any] | None) -> str | None:
@@ -216,7 +250,7 @@ async def on_order_finished(session: AsyncSession, user: User, biz: BizSettings,
         payers = [k for k in (_payer_key(r) for r in rows) if k]
         b13 = rules.many_payers(payers, biz.b13_max_payers)
         if b13 is not None:
-            await _apply(session, user, b13, now)
+            await _apply(session, user, b13, now, key=f"payers:{b13.details['payers']}")
 
 
 async def check_withdrawal(session: AsyncSession, user: User, biz: BizSettings, amount: Decimal, now: datetime) -> None:
@@ -267,7 +301,7 @@ async def on_withdrawal_created(
                 AfSeverity.suspicious,
                 {"address": withdrawal.address, "network": withdrawal.network.value, "users": [user.id, *other_ids]},
             )
-            await _apply(session, user, trigger, now)
+            await _apply(session, user, trigger, now, key=shared_key(withdrawal))
     if biz.b12_enabled:
         deposits = (
             await session.execute(
@@ -287,11 +321,15 @@ async def on_withdrawal_created(
             biz.b12_balance_pct,
         )
         if b12 is not None:
-            await _apply(session, user, b12, now)
+            await _apply(session, user, b12, now, key=f"withdrawal:{withdrawal.id}")
     return other_ids
 
 
-async def flag_shared_address(c: Container, user_ids: list[int], withdrawal_id: int) -> None:
+def shared_key(withdrawal: Withdrawal) -> str:
+    return f"{withdrawal.network.value}:{withdrawal.address.lower()}"
+
+
+async def flag_shared_address(c: Container, user_ids: list[int], withdrawal: Withdrawal) -> None:
     now = c.clock.now()
     for user_id in user_ids:
         async with c.db.begin() as session:
@@ -299,8 +337,10 @@ async def flag_shared_address(c: Container, user_ids: list[int], withdrawal_id: 
             user = await users_svc.lock(session, user_id)
             if not enabled_for(user, biz) or not biz.b4_enabled:
                 continue
-            trigger = rules.Trigger("B4", AfSeverity.suspicious, {"withdrawal_id": withdrawal_id})
-            await _apply(session, user, trigger, now)
+            trigger = rules.Trigger(
+                "B4", AfSeverity.suspicious, {"withdrawal_id": withdrawal.id, "address": withdrawal.address}
+            )
+            await _apply(session, user, trigger, now, key=shared_key(withdrawal))
 
 
 # --- admin actions ---------------------------------------------------------------------
@@ -347,6 +387,7 @@ async def block_orders(c: Container, user_id: int, actor: Actor, comment: str, i
         raise ServiceError("comment_required", "Укажите причину блокировки.")
     async with c.db.begin() as session:
         user = await users_svc.lock(session, user_id)
+        was = user.can_create_orders
         user.can_create_orders = False
         user.orders_block_reason = f"Вручную: {comment.strip()}"
         await audit.write(
@@ -355,7 +396,7 @@ async def block_orders(c: Container, user_id: int, actor: Actor, comment: str, i
             staff_id=actor.id,
             entity_type="user",
             entity_id=user_id,
-            before={"can_create_orders": True},
+            before={"can_create_orders": was},
             after={"can_create_orders": False},
             comment=comment,
             ip=ip,
@@ -405,14 +446,17 @@ async def global_conversion_watch(c: Container) -> rules.Trigger | None:
         trigger = rules.global_conversion_drop(int(row[0]), int(row[1]), biz.b8_min_orders, biz.b8_min_conversion_pct)
         if trigger is None:
             return None
-        if not c.throttle.allow("b8", now, timedelta(minutes=biz.b8_window_minutes)):
-            return trigger
         extra = f"Конверсия {trigger.details['conversion_pct']}% за {biz.b8_window_minutes} мин."
+        paused = False
         if biz.b8_auto_pause and biz.purchases_enabled:
             await settings_svc.update(
                 session, {"purchases_enabled": False}, staff_id=None, now=now, comment="B8 auto pause"
             )
             extra += " Покупки автоматически приостановлены."
+            paused = True
+        alert_allowed = c.throttle.allow("b8", now, timedelta(minutes=biz.b8_window_minutes))
+        if not paused and not alert_allowed:
+            return trigger  # only the alert is throttled; the auto-pause above is always applied
         session.add(
             AntifraudEvent(user_id=None, rule="B8", severity=AfSeverity.info, details=trigger.details, created_at=now)
         )

@@ -80,6 +80,17 @@ async function clientSmoke(browser, base) {
   await page.getByRole("button", { name: "Подтвердить" }).click();
   await page.getByTestId("payment").waitFor();
   await page.getByAltText("QR-код для оплаты по СБП").waitFor();
+  // The QR must actually render: the blob URL must stay alive (not revoked by a re-running effect).
+  await page.waitForFunction(() => {
+    const img = document.querySelector("img.qr");
+    return img && img.complete && img.naturalWidth > 0;
+  }, null, { timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(500); // a re-render that revoked the URL would break the image right after load
+  const qr = await page.evaluate(() => {
+    const img = document.querySelector("img.qr");
+    return img ? { complete: img.complete, naturalWidth: img.naturalWidth } : null;
+  });
+  if (!qr || !qr.complete || qr.naturalWidth <= 0) throw new Error(`QR image did not render: ${JSON.stringify(qr)}`);
   await page.getByRole("button", { name: "Оплатить" }).click();
   const opened = await page.evaluate(() => window.__opened);
   if (!opened?.startsWith("https://qr.nspk.ru/")) throw new Error("openLink was not called with the QR url");

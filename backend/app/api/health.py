@@ -18,4 +18,5 @@ async def readyz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "starting"}, status_code=503)
     checks = await container.readiness()
     ok = all(checks.values())
-    return JSONResponse({"status": "ok" if ok else "fail", "checks": checks}, status_code=200 if ok else 503)
+    body = {"status": "ok" if ok else "fail", "checks": checks, "bot_configured": container.bot_configured}
+    return JSONResponse(body, status_code=200 if ok else 503)

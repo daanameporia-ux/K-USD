@@ -22,20 +22,31 @@ export function Buy() {
   const limits = me.data ? { min: Number(me.data.limits.min_rub), max: Number(me.data.limits.max_rub) } : null;
   const check = useMemo(() => (limits ? validateRub(text, limits.min, limits.max) : null), [text, limits?.min, limits?.max]);
 
+  // Live preview: every input change starts a new sequence number; a response of an older request (or one for
+  // another amount) is dropped, so a slow quote for a previous amount can never be shown or confirmed.
+  const previewSeq = useRef(0);
   useEffect(() => {
+    const my = ++previewSeq.current;
     setQuote(null);
     setQuoteError(null);
     if (!check?.value) return;
     const amount = check.value;
     const t = setTimeout(async () => {
       try {
-        setQuote(await api.post<Quote>("/api/client/orders/preview", { amount_rub: String(amount) }));
+        const q = await api.post<Quote>("/api/client/orders/preview", { amount_rub: String(amount) });
+        if (my !== previewSeq.current || Number(q.amount_rub) !== amount) return;
+        setQuote(q);
       } catch (e) {
-        setQuoteError(errorMessage(e));
+        if (my === previewSeq.current) setQuoteError(errorMessage(e));
       }
     }, 300);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      previewSeq.current += 1; // the input changed or the screen closed: drop the in-flight answer
+    };
   }, [check?.value]);
+  // «Продолжить» only for a quote of exactly the amount in the input.
+  const quoteReady = !!quote && !!check?.value && Number(quote.amount_rub) === check.value;
 
   if (me.loading) return <Loader />;
   if (me.error || !me.data) return <ErrorView error={me.error} onRetry={() => me.reload()} />;
@@ -54,12 +65,10 @@ export function Buy() {
   async function create() {
     if (!quote) return;
     setNotice(null);
+    const body = { amount_rub: quote.amount_rub, expected_usdt: quote.usdt_amount };
     try {
-      const order = await api.post<Order>(
-        "/api/client/orders",
-        { amount_rub: quote.amount_rub, expected_usdt: quote.usdt_amount },
-        attempt.current.key,
-      );
+      // the key is reused only when resending exactly this request; a new amount / quote gets a new key
+      const order = await api.post<Order>("/api/client/orders", body, attempt.current.keyFor(body));
       attempt.current.done();
       if (order.status === "failed") {
         setNotice(order.error?.message ?? "Не удалось создать платёж, попробуйте ещё раз.");
@@ -71,8 +80,13 @@ export function Buy() {
     } catch (e) {
       if (e instanceof ApiError && e.code === "price_changed") {
         attempt.current.done();
-        setQuote(await api.post<Quote>("/api/client/orders/preview", { amount_rub: quote.amount_rub }));
-        setNotice("Курс изменился, сумма к зачислению пересчитана. Проверьте и подтвердите ещё раз.");
+        try {
+          setQuote(await api.post<Quote>("/api/client/orders/preview", { amount_rub: quote.amount_rub }));
+          setNotice("Курс изменился, сумма к зачислению пересчитана. Проверьте и подтвердите ещё раз.");
+        } catch (e2) {
+          setNotice(`Курс изменился, но пересчитать сумму не удалось: ${errorMessage(e2)}`);
+          haptic("error");
+        }
         return;
       }
       if (e instanceof ApiError && e.code === "active_order_exists") {
@@ -101,7 +115,13 @@ export function Buy() {
         </div>
         {notice && <Notice tone="warn">{notice}</Notice>}
         <div className="btn-row" style={{ marginTop: 12 }}>
-          <button className="btn btn-secondary" onClick={() => setConfirming(false)}>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              setNotice(null);
+              setConfirming(false);
+            }}
+          >
             Изменить
           </button>
           <AsyncButton onClick={create}>Подтвердить</AsyncButton>
@@ -139,9 +159,9 @@ export function Buy() {
         <div>
           <div className="muted small">Вы получите</div>
           <div className="big-usdt" data-testid="quote">
-            {quote ? formatUsdt(quote.usdt_amount) : "—"}
+            {quoteReady ? formatUsdt(quote!.usdt_amount) : "—"}
           </div>
-          {quote && (
+          {quoteReady && quote && (
             <div className="muted small">
               Курс {formatRate(quote.rate)}, комиссия {quote.markup_pct}% ({formatRub(quote.fee_rub)})
             </div>
@@ -149,7 +169,7 @@ export function Buy() {
           {quoteError && <div className="field-error">{quoteError}</div>}
         </div>
       </div>
-      <button className="btn btn-primary btn-block" disabled={!quote} onClick={() => setConfirming(true)}>
+      <button className="btn btn-primary btn-block" disabled={!quoteReady} onClick={() => quoteReady && setConfirming(true)}>
         Продолжить
       </button>
     </div>

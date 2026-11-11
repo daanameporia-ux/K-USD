@@ -277,7 +277,11 @@ async def dashboard(session: AsyncSession, biz: BizSettings, now: datetime) -> D
     flags = (
         await session.execute(
             select(
-                func.count(User.id).filter(User.can_create_orders.is_(False)),
+                # blocked by antifraud rules (manual blocks by an admin are prefixed "Вручную")
+                func.count(User.id).filter(
+                    User.can_create_orders.is_(False),
+                    func.coalesce(User.orders_block_reason, "").not_like("Вручную%"),
+                ),
                 func.count(User.id).filter(User.is_suspicious.is_(True)),
             )
         )

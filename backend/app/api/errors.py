@@ -52,4 +52,12 @@ def install(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
         log.exception("unhandled_error", path=request.url.path)
-        return JSONResponse(error_body("internal_error", "Внутренняя ошибка, попробуйте позже"), status_code=500)
+        # this handler runs outside the HTTP middleware: add the security headers here
+        from app.api.security import HEADERS
+
+        headers = {**HEADERS, "Cache-Control": "no-store"}
+        if request_id := request.headers.get("x-request-id"):
+            headers["X-Request-Id"] = request_id[:64]
+        return JSONResponse(
+            error_body("internal_error", "Внутренняя ошибка, попробуйте позже"), status_code=500, headers=headers
+        )

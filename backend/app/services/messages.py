@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from app.domain.amounts import format_rub, format_usdt
+from app.domain.text import escape_html
 from app.domain.timefmt import fmt_time
 
 
@@ -44,7 +45,7 @@ def order_review(public_id: str) -> str:
 
 
 def order_rejected(public_id: str, comment: str) -> str:
-    return f"❌ Заявка <b>{public_id}</b> отклонена после проверки.\nПричина: {comment}"
+    return f"❌ Заявка <b>{public_id}</b> отклонена после проверки.\nПричина: {escape_html(comment)}"
 
 
 def caption_closed(public_id: str, status_text: str) -> str:

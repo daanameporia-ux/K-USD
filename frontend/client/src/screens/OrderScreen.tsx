@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { formatCountdown, formatRub, formatUsdt } from "@shared/format";
 import { confirmAction, haptic, openLink } from "@shared/telegram";
@@ -19,15 +19,24 @@ export function OrderScreen() {
   const { id } = useParams();
   const nav = useNavigate();
   const order = useLoad(() => api.get<Order>(`/api/client/orders/${id}`), [id]);
-  const [qr, setQr] = useState<string | null>(null);
+  const [qr, setQr] = useState<{ id: string | undefined; url: string } | null>(null);
+  const [qrError, setQrError] = useState(false);
+  const [qrAttempt, setQrAttempt] = useState(0);
+  // The blob URL currently shown; revoked only when it is replaced or the screen unmounts.
+  const qrRef = useRef<{ id: string | undefined; url: string } | null>(null);
+  // While the user's action (cancel) is in flight the poll is paused, so it cannot race the action's result.
+  const acting = useRef(false);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
   const status = order.data?.status;
   const active = status === "pending" || status === "creating";
+  const pending = status === "pending";
 
   useEffect(() => {
     if (!active) return;
-    const poll = setInterval(() => void order.reload(true), 3000);
+    const poll = setInterval(() => {
+      if (!acting.current) void order.reload(true);
+    }, 3000);
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearInterval(poll);
@@ -39,30 +48,67 @@ export function OrderScreen() {
     if (status === "paid") haptic("success");
   }, [status]);
 
+  const replaceQr = (next: { id: string | undefined; url: string } | null) => {
+    if (qrRef.current && qrRef.current.url !== next?.url) URL.revokeObjectURL(qrRef.current.url);
+    qrRef.current = next;
+    setQr(next);
+  };
+
   useEffect(() => {
-    if (status !== "pending" || qr) return;
-    let url: string | null = null;
+    if (!pending) return;
+    if (qrRef.current?.id === id) return; // already loaded for this order
+    if (qrRef.current) replaceQr(null); // QR of another order
+    let cancelled = false;
+    setQrError(false);
     api
       .blobUrl(`/api/client/orders/${id}/qr.png`)
-      .then((u) => {
-        url = u;
-        setQr(u);
+      .then((url) => {
+        if (cancelled) URL.revokeObjectURL(url);
+        else replaceQr({ id, url });
       })
-      .catch(() => setQr(null));
+      .catch(() => {
+        if (!cancelled) setQrError(true);
+      });
     return () => {
-      if (url) URL.revokeObjectURL(url);
+      cancelled = true;
     };
-  }, [status, id, qr]);
+  }, [pending, id, qrAttempt]);
 
-  if (order.loading) return <Loader />;
-  if (order.error || !order.data) return <ErrorView error={order.error} onRetry={() => order.reload()} />;
+  // Revoke the last blob URL only when the screen goes away.
+  useEffect(
+    () => () => {
+      if (qrRef.current) URL.revokeObjectURL(qrRef.current.url);
+      qrRef.current = null;
+    },
+    [],
+  );
+
+  const retryQr = () => {
+    replaceQr(null);
+    setQrError(false);
+    setQrAttempt((n) => n + 1);
+  };
+
+  if (!order.data) {
+    if (order.loading || !order.error) return <Loader />;
+    return <ErrorView error={order.error} onRetry={() => order.reload()} />;
+  }
   const o = order.data;
   const left = new Date(o.expires_at).getTime() - now;
   const final = FINAL[o.status];
+  const qrUrl = qr && qr.id === id ? qr.url : null;
 
   return (
     <div>
       <TopBar title={`Заявка ${o.public_id}`} />
+      {order.error ? (
+        <Notice tone="warn">
+          <span data-testid="poll-error">
+            Не удалось обновить статус: {errorMessage(order.error)}
+            {active ? " Повторим автоматически." : ""}
+          </span>
+        </Notice>
+      ) : null}
       <div className="card stack">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span className="big-usdt">{formatRub(o.amount_rub)}</span>
@@ -74,7 +120,26 @@ export function OrderScreen() {
 
       {o.status === "pending" && (
         <div className="card stack" data-testid="payment">
-          {qr ? <img className="qr" src={qr} alt="QR-код для оплаты по СБП" /> : <Loader text="Готовим QR-код…" />}
+          {qrError ? (
+            <div className="state state-error" role="alert" data-testid="qr-error">
+              <p>Не удалось загрузить QR-код. Можно оплатить кнопкой «Оплатить» или попробовать ещё раз.</p>
+              <button className="btn btn-secondary" onClick={retryQr}>
+                Повторить
+              </button>
+            </div>
+          ) : qrUrl ? (
+            <img
+              className="qr"
+              src={qrUrl}
+              alt="QR-код для оплаты по СБП"
+              onError={() => {
+                replaceQr(null);
+                setQrError(true);
+              }}
+            />
+          ) : (
+            <Loader text="Готовим QR-код…" />
+          )}
           <div>
             <div className="muted small" style={{ textAlign: "center" }}>
               Оплатить в течение
@@ -93,11 +158,15 @@ export function OrderScreen() {
             variant="danger"
             onClick={async () => {
               if (!(await confirmAction(`Отменить заявку ${o.public_id}?`))) return;
+              setError(null);
+              acting.current = true;
               try {
                 order.setData(await api.post<Order>(`/api/client/orders/${o.id}/cancel`));
               } catch (e) {
                 setError(errorMessage(e));
                 void order.reload(true);
+              } finally {
+                acting.current = false;
               }
             }}
           >

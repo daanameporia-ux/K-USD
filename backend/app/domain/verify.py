@@ -47,7 +47,7 @@ def evaluate(
         return VerifyStatus.wrong_recipient
     if info.amount is None or info.amount != expected_amount:
         return VerifyStatus.wrong_amount
-    if info.block_time is not None and info.block_time < not_before:
+    if info.block_time is None or info.block_time < not_before:
         return VerifyStatus.too_old
     if info.confirmations < required_confirmations:
         return VerifyStatus.pending_confirmations

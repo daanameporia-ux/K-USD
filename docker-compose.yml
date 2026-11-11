@@ -19,6 +19,11 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   app:
     build:
@@ -31,7 +36,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    stop_grace_period: 30s
+    stop_grace_period: 60s
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "10" }
@@ -68,6 +73,13 @@ services:
       - ./scripts/backup.sh:/backup.sh:ro
       - backups:/backups
     entrypoint: ["sh", "/backup.sh"]
+    healthcheck:
+      # unhealthy when the last successful dump is older than 26 hours
+      test: ["CMD-SHELL", "find /backups/.last_ok -mmin -1560 | grep -q ."]
+      interval: 10m
+      timeout: 10s
+      start_period: 30m
+      retries: 1
 
 volumes:
   pgdata:

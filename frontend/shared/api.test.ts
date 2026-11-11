@@ -63,6 +63,55 @@ describe("ApiClient", () => {
     await expect(api.get("/api/x")).rejects.toMatchObject({ code: "network_error" });
   });
 
+  it("network failure during re-auth becomes a friendly error", async () => {
+    const api = new ApiClient({
+      fetchImpl: (async () => json(401, {})) as typeof fetch,
+      reauth: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    const err = (await api.get("/api/x").catch((e) => e)) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 0, code: "network_error" });
+  });
+
+  it("network failure on the retried request after re-auth becomes a friendly error", async () => {
+    let n = 0;
+    const fetchImpl = (async () => {
+      n += 1;
+      if (n === 1) return json(401, {});
+      throw new TypeError("Failed to fetch");
+    }) as typeof fetch;
+    const api = new ApiClient({ fetchImpl, reauth: async () => "T2" });
+    const err = (await api.post("/api/x", {}, "k1").catch((e) => e)) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.code).toBe("network_error");
+    expect(n).toBe(2);
+  });
+
+  it("an ApiError thrown by re-auth is passed through", async () => {
+    const api = new ApiClient({
+      fetchImpl: (async () => json(401, {})) as typeof fetch,
+      reauth: async () => {
+        throw new ApiError(403, "forbidden", "Нет доступа");
+      },
+    });
+    await expect(api.get("/api/x")).rejects.toMatchObject({ status: 403, code: "forbidden" });
+  });
+
+  it("a body that breaks off mid-response becomes a friendly error", async () => {
+    const broken = new Response(
+      new ReadableStream({
+        start(c) {
+          c.error(new TypeError("network error"));
+        },
+      }),
+      { status: 200 },
+    );
+    const api = new ApiClient({ fetchImpl: (async () => broken) as typeof fetch });
+    await expect(api.get("/api/x")).rejects.toMatchObject({ code: "network_error" });
+  });
+
   it("shares a single re-auth between parallel requests", async () => {
     let authorized = false;
     const fetchImpl = (async (_u: string, init: RequestInit) => {
@@ -86,6 +135,18 @@ describe("Attempt", () => {
     expect(a.key).toBe(k);
     a.done();
     expect(a.key).not.toBe(k);
+  });
+
+  it("reuses the key only for identical request parameters", () => {
+    const a = new Attempt();
+    const k1 = a.keyFor({ network: "BEP20", amount: "100.00" });
+    expect(a.keyFor({ network: "BEP20", amount: "100.00" })).toBe(k1);
+    const k2 = a.keyFor({ network: "BEP20", amount: "50" });
+    expect(k2).not.toBe(k1);
+    expect(a.keyFor({ network: "TRC20", amount: "50" })).not.toBe(k2);
+    const k3 = a.keyFor({ x: 1 });
+    a.done();
+    expect(a.keyFor({ x: 1 })).not.toBe(k3);
   });
 });
 

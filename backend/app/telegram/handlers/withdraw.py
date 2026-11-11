@@ -81,8 +81,7 @@ async def _preview(ctx: Ctx, amount: Decimal) -> None:
     assert ctx.user is not None
     network = Network(ctx.fsm.data["network"])
     pv = await withdrawals.preview(ctx.container, ctx.user.id, network, ctx.fsm.data["address"], amount)
-    await ctx.fsm.set(S_CONFIRM, {"network": network.value, "address": pv.address, "amount": str(pv.amount)})
-    await ctx.reply(
+    sent = await ctx.reply(
         texts.WD_PREVIEW.format(
             network=NETWORK[network],
             address=escape_html(pv.address),
@@ -91,6 +90,16 @@ async def _preview(ctx: Ctx, amount: Decimal) -> None:
             to_send=format_usdt(pv.amount_to_send),
         ),
         keyboards.inline([(texts.BUY_CONFIRM, "wd:confirm"), (texts.BUY_CANCEL, "nav:cancel")]),
+    )
+    # The confirm button is valid only on this very preview message (an older preview must not confirm it).
+    await ctx.fsm.set(
+        S_CONFIRM,
+        {
+            "network": network.value,
+            "address": pv.address,
+            "amount": str(pv.amount),
+            "preview_message_id": int(sent["message_id"]) if sent else None,
+        },
     )
 
 
@@ -126,9 +135,9 @@ async def cb_confirm(ctx: Ctx) -> None:
     assert ctx.user is not None and ctx.callback is not None and ctx.callback.message is not None
     message_id = ctx.callback.message.message_id
     key = f"tg:{ctx.chat_id}:{message_id}"
-    if ctx.fsm.state != S_CONFIRM:
+    if ctx.fsm.state != S_CONFIRM or ctx.fsm.data.get("preview_message_id") != message_id:
         existing = await withdrawals.find_by_key(ctx.container, ctx.user.id, key)
-        await ctx.answer(texts.WD_ALREADY if existing else "Кнопка устарела")
+        await ctx.answer(texts.WD_ALREADY if existing else "Кнопка устарела", alert=not existing)
         return
     data = ctx.fsm.data
     result = await withdrawals.create(

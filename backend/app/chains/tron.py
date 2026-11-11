@@ -46,10 +46,14 @@ class TronVerifier:
             raise ChainUnavailable("unexpected gettransactioninfobyid response")
         if not info or not info.get("id"):
             return NOT_FOUND
-        receipt = info.get("receipt") or {}
-        success = receipt.get("result", "SUCCESS") == "SUCCESS" and info.get("result") != "FAILED"
-        ts = info.get("blockTimeStamp")
-        block_time = datetime.fromtimestamp(int(ts) / 1000, tz=UTC) if ts else None
+        try:
+            receipt = info.get("receipt") or {}
+            # TRC-20 calls always carry receipt.result; anything but SUCCESS (or a missing field) is a failure
+            success = receipt.get("result") == "SUCCESS" and info.get("result") != "FAILED"
+            block_time = datetime.fromtimestamp(int(info["blockTimeStamp"]) / 1000, tz=UTC)
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
+            # never treat an incomplete answer as a pass: retry later
+            raise ChainUnavailable(f"incomplete gettransactioninfobyid response: {type(exc).__name__}") from exc
 
         transfers = await self._events(tx_hash)
         if not transfers:
@@ -82,7 +86,7 @@ class TronVerifier:
                 to = str(result["to"])
                 to = to if to.startswith("T") else tron_from_hex(to)
                 amount = Decimal(str(result["value"])) / DECIMALS
-            except (KeyError, ValueError, ArithmeticError):
+            except (KeyError, ValueError, TypeError, AttributeError, ArithmeticError):
                 continue
             out.append(Transfer(contract, to, amount))
         return out
@@ -98,7 +102,7 @@ class TronVerifier:
                 contract = tron_from_hex(str(log["address"]))
                 to = tron_from_hex(topics[2][-40:])
                 amount = Decimal(int(str(log["data"]), 16)) / DECIMALS
-            except (KeyError, ValueError, TypeError, IndexError):
+            except (KeyError, ValueError, TypeError, IndexError, AttributeError, ArithmeticError):
                 continue
             out.append(Transfer(contract, to, amount))
         return out

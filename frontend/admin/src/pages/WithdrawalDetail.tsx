@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { formatDateTime, formatUsdt } from "@shared/format";
 import { confirmAction } from "@shared/telegram";
@@ -25,11 +25,15 @@ export function WithdrawalDetailPage() {
   const [forceOpen, setForceOpen] = useState(false);
   const [forceComment, setForceComment] = useState("");
 
-  // While the blockchain check is running, refresh every 5 seconds.
+  // While the blockchain check is running, refresh every 5 seconds. The poll pauses while an action is in flight,
+  // and useLoad drops answers of polls started before the action's result, so the newer state always wins.
   const verifying = w?.status === "verifying";
+  const acting = useRef(false);
   useEffect(() => {
     if (!verifying) return;
-    const t = window.setInterval(() => void reload(true), 5000);
+    const t = window.setInterval(() => {
+      if (!acting.current) void reload(true);
+    }, 5000);
     return () => window.clearInterval(t);
   }, [verifying, reload]);
 
@@ -42,13 +46,20 @@ export function WithdrawalDetailPage() {
   const isFinal = FINAL.includes(w.status);
   const mine = w.assigned_staff_id === me.staff.id;
   const canWork = mine || me.is_admin;
+  // B6: from the threshold only an admin may enter the hash / close the withdrawal (backend: 403 admin_only_amount).
+  const hashOnlyByAdmin = adminOnly && !me.is_admin;
   const rows = verifyRows(w.verify_details);
   const explorer = w.last_explorer_url ?? w.explorer_url;
 
   async function act(fn: () => Promise<Withdrawal>, success: string, after?: () => void) {
-    const ok = await action.run(async () => setData(await fn()), success);
-    if (ok) after?.();
-    else void reload(true);
+    acting.current = true;
+    try {
+      const ok = await action.run(async () => setData(await fn()), success);
+      if (ok) after?.();
+      else void reload(true);
+    } finally {
+      acting.current = false;
+    }
   }
 
   async function take() {
@@ -114,7 +125,9 @@ export function WithdrawalDetailPage() {
       {adminOnly && !isFinal && (
         <Notice tone="warn">
           Сумма от {formatUsdt(me.withdraw_admin_only_from_usdt)} — закрыть этот вывод может только админ
-          {me.is_admin ? "." : ". Вы можете взять его в работу и отправить, но хэш подтвердит админ."}
+          {me.is_admin
+            ? "."
+            : ". Вы можете взять его в работу и отправить перевод, но внести хэш и закрыть вывод может только админ."}
         </Notice>
       )}
 
@@ -220,7 +233,21 @@ export function WithdrawalDetailPage() {
               </div>
             )}
 
-            {w.status === "in_progress" && canWork && (
+            {w.status === "in_progress" && canWork && hashOnlyByAdmin && (
+              <div className="stack" data-testid="hash-admin-only">
+                <Notice tone="info">
+                  Хэш транзакции для этого вывода вносит только админ: после отправки перевода передайте хэш админу, он
+                  внесёт его и закроет вывод.
+                </Notice>
+                <div className="btn-row">
+                  <AsyncButton variant="secondary" onClick={release}>
+                    Вернуть в очередь
+                  </AsyncButton>
+                </div>
+              </div>
+            )}
+
+            {w.status === "in_progress" && canWork && !hashOnlyByAdmin && (
               <div className="stack">
                 <label className="field">
                   <span>Хэш отправленной транзакции</span>

@@ -61,14 +61,21 @@ class BscVerifier:
         if not isinstance(receipt, dict) or "blockNumber" not in receipt:
             raise ChainUnavailable("unexpected receipt format")
         success = receipt.get("status") == "0x1"
-        tx_block = int(receipt["blockNumber"], 16)
-        head = int(await self.rpc("eth_blockNumber", []), 16)
-        block = await self.rpc("eth_getBlockByNumber", [receipt["blockNumber"], False])
-        block_time = (
-            datetime.fromtimestamp(int(block["timestamp"], 16), tz=UTC)
-            if isinstance(block, dict) and block.get("timestamp")
-            else None
-        )
+        try:
+            tx_block = int(receipt["blockNumber"], 16)
+            head = int(await self.rpc("eth_blockNumber", []), 16)
+            block = await self.rpc("eth_getBlockByNumber", [receipt["blockNumber"], False])
+            raw_ts = block.get("timestamp") if isinstance(block, dict) else None
+            if not raw_ts:
+                # a lagging node may not know the block yet; logs carry blockTimestamp on most nodes
+                raw_ts = next(
+                    (lg.get("blockTimestamp") for lg in receipt.get("logs") or [] if lg.get("blockTimestamp")), None
+                )
+            if not raw_ts:
+                raise ChainUnavailable("block timestamp is unknown")
+            block_time = datetime.fromtimestamp(int(raw_ts, 16), tz=UTC)
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as exc:
+            raise ChainUnavailable(f"unexpected RPC response: {type(exc).__name__}") from exc
         transfers: list[Transfer] = []
         for entry in receipt.get("logs") or []:
             try:
@@ -78,7 +85,7 @@ class BscVerifier:
                 contract = to_checksum_address(str(entry["address"]))
                 to = to_checksum_address("0x" + topics[2][-40:])
                 amount = Decimal(int(str(entry["data"]), 16)) / DECIMALS
-            except (KeyError, ValueError, TypeError, IndexError):
+            except (KeyError, ValueError, TypeError, IndexError, AttributeError, ArithmeticError):
                 continue
             transfers.append(Transfer(contract, to, amount))
         chosen = pick_transfer(transfers, self.usdt_contract, expected_to, case_insensitive=True)

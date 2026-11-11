@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { insideTelegram } from "@shared/telegram";
+import { ApiError } from "@shared/api";
 import { Loader } from "@shared/ui";
 import { login } from "./api";
 import { Home } from "./screens/Home";
@@ -11,17 +12,20 @@ import { History } from "./screens/History";
 import { Register } from "./screens/Register";
 
 export function App() {
-  const [state, setState] = useState<"loading" | "ok" | "outside" | "failed">("loading");
+  const [state, setState] = useState<"loading" | "ok" | "outside" | "failed" | "offline">("loading");
 
-  useEffect(() => {
+  const start = () => {
     if (!insideTelegram()) {
       setState("outside");
       return;
     }
+    setState("loading");
     login()
       .then((ok) => setState(ok ? "ok" : "failed"))
-      .catch(() => setState("failed"));
-  }, []);
+      .catch((e) => setState(e instanceof ApiError && e.code === "network_error" ? "offline" : "failed"));
+  };
+
+  useEffect(start, []);
 
   if (state === "loading") return <Loader text="Вход…" />;
   if (state === "outside")
@@ -30,6 +34,18 @@ export function App() {
         <div className="card">
           <h1>Откройте приложение в Telegram</h1>
           <p className="muted">Это мини-приложение работает внутри Telegram: откройте бота и нажмите «Приложение».</p>
+        </div>
+      </div>
+    );
+  if (state === "offline")
+    return (
+      <div className="page">
+        <div className="card stack">
+          <h1>Нет связи с сервером</h1>
+          <p className="muted">Проверьте интернет и попробуйте ещё раз.</p>
+          <button className="btn btn-primary btn-block" onClick={start}>
+            Повторить
+          </button>
         </div>
       </div>
     );

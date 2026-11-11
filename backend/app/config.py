@@ -27,7 +27,8 @@ def _split_csv(value: object) -> list[str]:
 class Config(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    env: Literal["prod", "dev", "test"] = Field("dev", alias="ENV")
+    # defaults to prod so that a forgotten ENV never relaxes production checks
+    env: Literal["prod", "dev", "test"] = Field("prod", alias="ENV")
     bot_token: str = Field(alias="BOT_TOKEN", min_length=10)
     bot_mode: Literal["webhook", "polling"] = Field("webhook", alias="BOT_MODE")
     public_base_url: str = Field(alias="PUBLIC_BASE_URL")

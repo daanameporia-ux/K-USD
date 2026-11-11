@@ -23,7 +23,7 @@ from app.domain.pricing import Quote, quote
 from app.domain.statuses import order_transition
 from app.logging import get_logger
 from app.models import Order, PaymentCallback, User
-from app.payments.base import CallbackEvent, CallbackParseError, PaymentProvider
+from app.payments.base import CallbackEvent, PaymentProvider
 from app.services import antifraud, audit, ledger, messages, notify, rates
 from app.services import settings as settings_svc
 from app.services import users as users_svc
@@ -122,6 +122,15 @@ def check_amount(user: User, biz: BizSettings, amount_rub: int) -> None:
         raise ServiceError("amount_out_of_range", rub_range_message(lim.min_rub, lim.max_rub))
 
 
+MSG_TOO_SMALL = "Сумма слишком мала: к зачислению получается 0 USDT. Увеличьте сумму."
+
+
+def _positive(q: Quote) -> Quote:
+    if q.usdt_amount <= 0:
+        raise ServiceError("amount_too_small", MSG_TOO_SMALL)
+    return q
+
+
 @dataclass(frozen=True)
 class StartInfo:
     limits: Limits
@@ -143,7 +152,7 @@ async def preview(c: Container, user_id: int, amount_rub: int) -> Quote:
         biz = await settings_svc.load(session)
         check_amount(user, biz, amount_rub)
         rate = await check_can_create(session, user, biz, c.clock.now(), amount_rub)
-        return quote(amount_rub, user.markup_pct, rate.value)
+        return _positive(quote(amount_rub, user.markup_pct, rate.value))
 
 
 @dataclass(frozen=True)
@@ -179,7 +188,7 @@ async def create(
             biz = await settings_svc.load(session)
             check_amount(user, biz, amount_rub)
             rate = await check_can_create(session, user, biz, now, amount_rub)
-            q = quote(amount_rub, user.markup_pct, rate.value)
+            q = _positive(quote(amount_rub, user.markup_pct, rate.value))
             if expected_usdt is not None and q.usdt_amount != expected_usdt:
                 raise PriceChanged(q)
             ttl = timedelta(minutes=biz.order_ttl_minutes)
@@ -249,6 +258,8 @@ async def create(
             locked.status = order_transition(locked.status, OrderStatus.pending)
             locked.provider_payment_id = qr.provider_payment_id
             locked.qr_url = qr.qr_url
+            # never expire the order while the provider's QR can still be paid
+            locked.expires_at = max(locked.expires_at, qr.expires_at)
         return CreateResult(locked, True)
 
 
@@ -337,9 +348,17 @@ async def apply_event(session: AsyncSession, order: Order, event: CallbackEvent,
     order.paid_amount_rub = event.amount_rub
     order.payer_info = event.payer_info
     order.paid_at = now
-    mismatch = event.amount_rub is not None and event.amount_rub != order.amount_rub
-    if order.status != OrderStatus.pending or mismatch:
-        reason = "paid_after_close" if order.status != OrderStatus.pending else "amount_mismatch"
+    if order.status != OrderStatus.pending:
+        reason: str | None = "paid_after_close"
+    elif event.amount_rub is None:
+        reason = "amount_unknown"  # the provider did not confirm the amount: never credit blindly
+    elif event.amount_rub != order.amount_rub:
+        reason = "amount_mismatch"
+    elif order.usdt_amount <= 0:
+        reason = "zero_amount"
+    else:
+        reason = None
+    if reason is not None:
         was = order.status
         order.status = order_transition(order.status, OrderStatus.review)
         order.review_reason = reason
@@ -396,7 +415,7 @@ async def process_event(
             insert(PaymentCallback)
             .values(
                 provider=provider_name,
-                event_key=event.event_key,
+                event_key=f"{provider_name}:{event.event_key}",
                 headers=_safe_headers(headers),
                 body=body.decode("utf-8", errors="replace"),
                 signature_valid=True,
@@ -449,13 +468,19 @@ async def handle_callback(
     try:
         provider = c.payments.get(provider_name)
     except KeyError:
+        await _log_callback(c, provider_name[:50], headers, body, signature_valid=None, result="unknown_provider")
         return CallbackResponse(404, "unknown_provider")
-    if not provider.verify_callback(headers, body):
+    try:
+        valid = provider.verify_callback(headers, body)
+    except Exception:
+        log.exception("payment_callback_verify_failed", provider=provider_name)
+        valid = False
+    if not valid:
         await _log_callback(c, provider_name, headers, body, signature_valid=False, result="bad_signature")
         return CallbackResponse(401, "bad_signature")
     try:
         event = provider.parse_callback(body)
-    except CallbackParseError as exc:
+    except Exception as exc:
         log.warning("payment_callback_unparsable", provider=provider_name, error=str(exc))
         await _log_callback(c, provider_name, headers, body, signature_valid=True, result="parse_error")
         return CallbackResponse(400, "parse_error")
@@ -488,32 +513,61 @@ async def expire_due(c: Container, batch: int = 100) -> int:
         ).all()
     expired = 0
     for order_id, provider_name, payment_id, expires_at in rows:
-        event: CallbackEvent | None = None
-        provider: PaymentProvider | None = None
         try:
-            provider = c.payments.get(provider_name)
-            if payment_id:
-                event = await asyncio.wait_for(provider.get_status(payment_id), timeout=PROVIDER_TIMEOUT)
-        except Exception as exc:
-            log.warning("provider_get_status_failed", order_id=order_id, error=f"{type(exc).__name__}: {exc}")
-            if c.clock.now() < expires_at + RECONCILE_GRACE:
-                continue  # retry the reconciliation on the next run
-        if event is not None and event.status == "paid":
-            body = json.dumps({"source": "reconcile", **event.raw}, default=str).encode()
-            await process_event(c, provider_name, event, {"x-source": "reconcile"}, body)
-            continue
+            expired += await _expire_one(c, order_id, provider_name, payment_id, expires_at)
+        except Exception:
+            # one broken order must not block expiry and reconciliation of all the others
+            log.exception("expire_order_failed", order_id=order_id)
+            if c.throttle.allow(f"expire_failed:{order_id}", c.clock.now(), timedelta(hours=1)):
+                async with c.db.begin() as session:
+                    await notify.alert(session, f"❗ Не удалось закрыть просроченную заявку id {order_id}.", now=now)
+    return expired
+
+
+async def _expire_one(
+    c: Container, order_id: int, provider_name: str, payment_id: str | None, expires_at: datetime
+) -> int:
+    now = c.clock.now()
+    event: CallbackEvent | None = None
+    provider: PaymentProvider | None = None
+    try:
+        provider = c.payments.get(provider_name)
+        if payment_id:
+            event = await asyncio.wait_for(provider.get_status(payment_id), timeout=PROVIDER_TIMEOUT)
+    except Exception as exc:
+        log.warning("provider_get_status_failed", order_id=order_id, error=f"{type(exc).__name__}: {exc}")
+        if c.throttle.allow("provider_status_failed", now):
+            async with c.db.begin() as session:
+                await notify.alert(
+                    session, f"❗ Платёжный провайдер недоступен для сверки: {type(exc).__name__}", now=now
+                )
+        if now < expires_at + RECONCILE_GRACE:
+            return 0  # retry the reconciliation on the next run
+    if event is not None and event.status == "paid":
+        body = json.dumps({"source": "reconcile", **event.raw}, default=str).encode()
+        await process_event(c, provider_name, event, {"x-source": "reconcile"}, body)
         async with c.db.begin() as session:
             order = await _lock_order(session, order_id)
-            if order.status != OrderStatus.pending:
-                continue
-            user = await users_svc.lock(session, order.user_id)
-            order.status = order_transition(order.status, OrderStatus.expired)
-            order.finished_at = c.clock.now()
-            await notify.message(session, user.tg_id, messages.order_expired(order.public_id), now=now)
-            await _close_qr_message(session, order, "⌛ Заявка истекла.", now)
-            await _finished(session, user, now)
-            expired += 1
-    return expired
+            if order.status == OrderStatus.pending:
+                # the provider says "paid" but the event could not be applied: let an admin decide
+                await users_svc.lock(session, order.user_id)
+                order.status = order_transition(order.status, OrderStatus.review)
+                order.review_reason = "reconcile_unapplied"
+                await notify.alert(
+                    session, f"⚠️ Заявка {order.public_id}: провайдер сообщает об оплате, нужен разбор.", now=now
+                )
+        return 0
+    async with c.db.begin() as session:
+        order = await _lock_order(session, order_id)
+        if order.status != OrderStatus.pending:
+            return 0
+        user = await users_svc.lock(session, order.user_id)
+        order.status = order_transition(order.status, OrderStatus.expired)
+        order.finished_at = c.clock.now()
+        await notify.message(session, user.tg_id, messages.order_expired(order.public_id), now=now)
+        await _close_qr_message(session, order, "⌛ Заявка истекла.", now)
+        await _finished(session, user, now)
+        return 1
 
 
 async def fail_stuck_creating(c: Container) -> int:
@@ -580,6 +634,8 @@ async def resolve_review(
                 amount = quote(paid_rub, order.markup_pct, rate.value).usdt_amount
             if amount <= 0:
                 raise ServiceError("nothing_to_credit", "Сумма к зачислению равна нулю.")
+            if paid_rub != order.amount_rub:
+                order.margin_rub = quote(paid_rub, order.markup_pct, order.rate).margin_rub
             await _credit(session, order, user, amount, now)
         await audit.write(
             session,

@@ -17,6 +17,7 @@ from app.services.actor import Actor
 if TYPE_CHECKING:
     from app.container import Container
 
+MAX_ID = 2**63 - 1  # BIGINT
 SESSION_LIMIT = 120  # requests per minute per session
 MONEY_LIMIT = 10  # POST /orders, /withdrawals per minute per user
 
@@ -24,20 +25,33 @@ MONEY_LIMIT = 10  # POST /orders, /withdrawals per minute per user
 class RateLimiter:
     """Sliding-window limiter living in the process (single-instance service)."""
 
+    SWEEP_EVERY = 1000
+    MAX_WINDOW = 3600.0
+
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = {}
+        self._calls = 0
 
     def hit(self, key: str, limit: int, window: float, now: float) -> bool:
+        self._calls += 1
+        if self._calls % self.SWEEP_EVERY == 0:
+            self._sweep(now)
         q = self._hits.setdefault(key, deque())
         while q and q[0] <= now - window:
             q.popleft()
         if len(q) >= limit:
             return False
         q.append(now)
-        if len(self._hits) > 50_000:  # keep memory bounded
-            for k in [k for k, v in self._hits.items() if not v][:10_000]:
-                del self._hits[k]
         return True
+
+    def _sweep(self, now: float) -> None:
+        """Drop keys whose newest hit is older than any window in use (keeps memory bounded)."""
+        stale = [k for k, q in self._hits.items() if not q or q[-1] <= now - self.MAX_WINDOW]
+        for k in stale:
+            del self._hits[k]
+
+    def __len__(self) -> int:
+        return len(self._hits)
 
 
 class TooManyRequests(ServiceError):

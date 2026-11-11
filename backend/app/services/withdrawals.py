@@ -8,19 +8,21 @@ from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chains.addresses import AddressError, TxHashError, normalize_tx_hash, same_address, validate_address
-from app.chains.base import ChainUnavailable, ChainVerifier
+from app.chains.base import ChainVerifier
 from app.domain.amounts import format_usdt
 from app.domain.enums import LedgerType, Network, VerifyStatus, WithdrawalStatus
 from app.domain.errors import Conflict, Forbidden, NotFound, ServiceError
 from app.domain.statuses import withdrawal_transition
+from app.domain.text import escape_html
 from app.domain.verify import FINAL_FAILURES, LABELS, evaluate
 from app.logging import get_logger
 from app.models import AddressBlacklist, LedgerEntry, User, Withdrawal
-from app.services import antifraud, audit, ledger, notify
+from app.services import antifraud, audit, history, ledger, notify
 from app.services import settings as settings_svc
 from app.services import users as users_svc
 from app.services.actor import Actor
@@ -47,7 +49,7 @@ def fee_for(biz: BizSettings, network: Network) -> Decimal:
 async def available_for_withdrawal(session: AsyncSession, user: User, biz: BizSettings, now: datetime) -> Decimal:
     """Balance minus deposits younger than B11 hold hours (if enabled)."""
     available = user.balance
-    if biz.b11_enabled:
+    if biz.b11_enabled and biz.af_enabled and user.af_enabled:
         fresh = (
             await session.execute(
                 select(func.coalesce(func.sum(LedgerEntry.balance_delta), 0)).where(
@@ -227,7 +229,7 @@ async def create(
         )
         shared_with = await antifraud.on_withdrawal_created(session, user, w, biz, now)
     if shared_with:
-        await antifraud.flag_shared_address(c, shared_with, w.id)
+        await antifraud.flag_shared_address(c, shared_with, w)
     return CreateResult(w, True)
 
 
@@ -253,7 +255,7 @@ async def get_for_user(session: AsyncSession, user_id: int, withdrawal_id: int) 
 
 def _client_text_rejected(w: Withdrawal, reason: str) -> str:
     return (
-        f"❌ Вывод <b>{w.public_id}</b> отклонён.\nПричина: {reason}\n"
+        f"❌ Вывод <b>{w.public_id}</b> отклонён.\nПричина: {escape_html(reason)}\n"
         f"Средства ({format_usdt(w.amount)} USDT) возвращены на баланс."
     )
 
@@ -368,6 +370,34 @@ class SubmitResult:
     verify_status: VerifyStatus | None
 
 
+async def _hash_used_by(session: AsyncSession, network: Network, tx_hash: str, exclude_id: int) -> str | None:
+    """public_id of another withdrawal that already used this hash (bound, or completed with it), if any."""
+    row = (
+        await session.execute(
+            select(Withdrawal.public_id).where(
+                Withdrawal.network == network,
+                Withdrawal.id != exclude_id,
+                or_(
+                    Withdrawal.tx_hash == tx_hash,
+                    and_(
+                        Withdrawal.status == WithdrawalStatus.completed,
+                        Withdrawal.verify_details["tx_hash"].astext == tx_hash,
+                    ),
+                ),
+            )
+        )
+    ).first()
+    return None if row is None else str(row[0])
+
+
+def _duplicate(public_id: str) -> Conflict:
+    return Conflict(
+        "duplicate_hash",
+        f"Этот хэш уже использован в выводе {public_id}.",
+        details={"verify_status": VerifyStatus.duplicate_hash.value},
+    )
+
+
 async def submit_hash(
     c: Container, withdrawal_id: int, actor: Actor, tx_hash: str, ip: str | None = None
 ) -> SubmitResult:
@@ -383,19 +413,9 @@ async def submit_hash(
             normalized = normalize_tx_hash(w.network, tx_hash)
         except TxHashError as exc:
             raise ServiceError("invalid_hash", exc.message) from None
-        dup = (
-            await session.execute(
-                select(Withdrawal.public_id).where(
-                    Withdrawal.network == w.network, Withdrawal.tx_hash == normalized, Withdrawal.id != w.id
-                )
-            )
-        ).first()
-        if dup is not None:
-            raise Conflict(
-                "duplicate_hash",
-                f"Этот хэш уже использован в выводе {dup[0]}.",
-                details={"verify_status": VerifyStatus.duplicate_hash.value},
-            )
+        used_by = await _hash_used_by(session, w.network, normalized, w.id)
+        if used_by is not None:
+            raise _duplicate(used_by)
         w.tx_hash = normalized
         w.status = withdrawal_transition(w.status, WithdrawalStatus.verifying)
         w.hash_submitted_at = now
@@ -411,6 +431,11 @@ async def submit_hash(
             after={"tx_hash": normalized},
             ip=ip,
         )
+        try:
+            await session.flush()
+        except IntegrityError:
+            # a concurrent submission of the same hash won the unique index
+            raise _duplicate("другом выводе") from None
     status = await verify_one(c, withdrawal_id)
     async with c.db() as session:
         fresh = await session.get(Withdrawal, withdrawal_id)
@@ -457,7 +482,7 @@ async def verify_one(c: Container, withdrawal_id: int) -> VerifyStatus | None:
             "confirmations": info.confirmations,
             "block_time": info.block_time.isoformat() if info.block_time else None,
         }
-    except (ChainUnavailable, TimeoutError) as exc:
+    except Exception as exc:  # ChainUnavailable, timeouts and unexpected response shapes alike
         log.warning("chain_unavailable", network=network.value, error=str(exc)[:200])
         status = VerifyStatus.explorer_unavailable
         details["error"] = str(exc)[:300]
@@ -508,14 +533,25 @@ async def _apply_verification(
         return status
 
 
-async def recheck(c: Container, withdrawal_id: int, actor: Actor) -> VerifyStatus | None:
+async def recheck(c: Container, withdrawal_id: int, actor: Actor, ip: str | None = None) -> VerifyStatus | None:
     async with c.db() as session:
         w = await session.get(Withdrawal, withdrawal_id)
         if w is None:
             raise NotFound("Вывод не найден")
         if w.status != WithdrawalStatus.verifying:
             raise Conflict("not_verifying", "Заявка не на проверке.")
-    return await verify_one(c, withdrawal_id)
+    status = await verify_one(c, withdrawal_id)
+    async with c.db.begin() as session:
+        await audit.write(
+            session,
+            action="withdrawal.recheck",
+            staff_id=actor.id,
+            entity_type="withdrawal",
+            entity_id=withdrawal_id,
+            after={"verify_status": status.value if status else None},
+            ip=ip,
+        )
+    return status
 
 
 async def verify_due(c: Container, batch: int = 50) -> int:
@@ -542,7 +578,12 @@ async def verify_due(c: Container, batch: int = 50) -> int:
 
 
 async def force_complete(
-    c: Container, withdrawal_id: int, actor: Actor, comment: str, ip: str | None = None
+    c: Container,
+    withdrawal_id: int,
+    actor: Actor,
+    comment: str,
+    ip: str | None = None,
+    tx_hash: str | None = None,
 ) -> Withdrawal:
     actor.require_admin()
     comment = (comment or "").strip()
@@ -554,6 +595,18 @@ async def force_complete(
         if w.status not in (WithdrawalStatus.in_progress, WithdrawalStatus.verifying):
             raise Conflict("cannot_force", "Принудительно закрыть можно только заявку в работе или на проверке.")
         before = {"status": w.status.value, "tx_hash": w.tx_hash}
+        # Bind the transfer hash to this withdrawal so that the same transfer can never close another one:
+        # an explicit hash, the current one, or the last hash that failed verification (kept in verify_details).
+        candidate = tx_hash or w.tx_hash or (w.verify_details or {}).get("tx_hash")
+        if candidate:
+            try:
+                normalized = normalize_tx_hash(w.network, candidate)
+            except TxHashError as exc:
+                raise ServiceError("invalid_hash", exc.message) from None
+            used_by = await _hash_used_by(session, w.network, normalized, w.id)
+            if used_by is not None:
+                raise _duplicate(used_by)
+            w.tx_hash = normalized
         if w.status == WithdrawalStatus.in_progress:
             w.status = withdrawal_transition(w.status, WithdrawalStatus.verifying)
         w.status = withdrawal_transition(w.status, WithdrawalStatus.completed)
@@ -564,10 +617,13 @@ async def force_complete(
         await ledger.complete(session, user, w.amount, withdrawal_id=w.id, now=now)
         text = f"✅ Вывод <b>{w.public_id}</b> исполнен: {format_usdt(w.amount_to_send)} USDT ({NETWORK[w.network]})."
         if w.tx_hash:
-            text += f"\nХэш: <code>{w.tx_hash}</code>"
+            url = history.explorer_url(w.network, w.tx_hash)
+            text += f'\nХэш: <code>{w.tx_hash}</code>\n<a href="{url}">Посмотреть в эксплорере</a>'
         await notify.message(session, user.tg_id, text, now=now)
         await notify.alert(
-            session, f"❗ Вывод {w.public_id} закрыт принудительно без проверки. Комментарий: {comment}", now=now
+            session,
+            f"❗ Вывод {w.public_id} закрыт принудительно без проверки. Комментарий: {escape_html(comment)}",
+            now=now,
         )
         await audit.write(
             session,
@@ -576,7 +632,7 @@ async def force_complete(
             entity_type="withdrawal",
             entity_id=w.id,
             before=before,
-            after={"status": w.status.value, "forced": True},
+            after={"status": w.status.value, "forced": True, "tx_hash": w.tx_hash},
             comment=comment,
             ip=ip,
         )

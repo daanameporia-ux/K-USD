@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.domain.amounts import format_usdt
-from app.domain.enums import VerifyStatus
+from app.domain.enums import VerifyStatus, WithdrawalStatus
 from app.domain.pricing import Quote
 from app.domain.verify import LABELS
 from app.models import AntifraudEvent, AuditLog, LedgerEntry, Order, Staff, User, Withdrawal
@@ -96,8 +96,13 @@ def withdrawal(w: Withdrawal, *, admin: bool = False) -> dict[str, Any]:
         "amount": money(w.amount),
         "fee": money(w.fee),
         "amount_to_send": money(w.amount_to_send),
-        "tx_hash": w.tx_hash,
-        "explorer_url": history.explorer_url(w.network, w.tx_hash) if w.tx_hash else None,
+        # clients see the hash only once it is verified (or the withdrawal was closed by an admin)
+        "tx_hash": w.tx_hash if (admin or w.status == WithdrawalStatus.completed) else None,
+        "explorer_url": (
+            history.explorer_url(w.network, w.tx_hash)
+            if w.tx_hash and (admin or w.status == WithdrawalStatus.completed)
+            else None
+        ),
         "reject_reason": w.reject_reason,
         "created_at": ts(w.created_at),
         "finished_at": ts(w.finished_at),

@@ -10,7 +10,7 @@ from typing import Literal
 from sqlalchemy import literal, select, tuple_, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import Network
+from app.domain.enums import Network, WithdrawalStatus
 from app.domain.errors import ServiceError
 from app.models import Order, Withdrawal
 from app.services.labels import ORDER_STATUS, WITHDRAWAL_STATUS
@@ -95,6 +95,7 @@ async def feed(
             )
         else:
             w = wds[r.id]
+            done = w.status == WithdrawalStatus.completed
             items.append(
                 HistoryItem(
                     kind="withdrawal",
@@ -108,8 +109,8 @@ async def feed(
                     address=w.address,
                     fee=w.fee,
                     amount_to_send=w.amount_to_send,
-                    tx_hash=w.tx_hash,
-                    explorer_url=explorer_url(w.network, w.tx_hash) if w.tx_hash else None,
+                    tx_hash=w.tx_hash if done else None,
+                    explorer_url=explorer_url(w.network, w.tx_hash) if (w.tx_hash and done) else None,
                     reject_reason=w.reject_reason,
                 )
             )

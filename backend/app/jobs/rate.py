@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from app.domain.rates import RateParseError, parse_rapira
+from app.domain.text import escape_html
 from app.logging import get_logger
 from app.services import notify, rates
 from app.services import settings as settings_svc
@@ -38,7 +39,7 @@ async def refresh_rate(c: Container) -> None:
         log.warning("rate_fetch_failed", error=f"{type(exc).__name__}: {exc}")
         if isinstance(exc, RateParseError) and c.throttle.allow("rate_parse", now):
             async with c.db.begin() as session:
-                await notify.alert(session, f"⚠️ Ответ Rapira не разобран: {exc}", now=now)
+                await notify.alert(session, f"⚠️ Ответ Rapira не разобран: {escape_html(exc)}", now=now)
 
     async with c.db.begin() as session:
         if parsed is not None:
@@ -53,8 +54,6 @@ async def refresh_rate(c: Container) -> None:
                         "Курс не применён. Подтвердите его в админке или задайте ручной курс.",
                         now=now,
                     )
-        if await rates.current(session, biz, now) is None:
-            if c.throttle.allow("rate_unavailable", now):
-                await notify.alert(session, "❗ Нет валидного курса — покупки недоступны.", now=now)
-        else:
-            c.throttle.reset("rate_unavailable")
+        # not more often than once per 10 minutes, even if the source flaps between valid and invalid
+        if await rates.current(session, biz, now) is None and c.throttle.allow("rate_unavailable", now):
+            await notify.alert(session, "❗ Нет валидного курса — покупки недоступны.", now=now)

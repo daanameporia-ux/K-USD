@@ -22,7 +22,11 @@ export function useIsMobile(): boolean {
   return mobile;
 }
 
-/** Cursor-paginated list: first page on deps change, "Показать ещё" appends. */
+/**
+ * Cursor-paginated list: first page on deps change, "Показать ещё" appends.
+ * A non-silent reload (filter / tab change, «Обновить») drops the old rows first, so rows of the previous
+ * filter are never shown under the new one — not while loading and not when the new request fails.
+ */
 export function usePaged<T>(fetchPage: (cursor: string | null) => Promise<Page<T>>, deps: unknown[]) {
   const [items, setItems] = useState<T[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -35,7 +39,12 @@ export function usePaged<T>(fetchPage: (cursor: string | null) => Promise<Page<T
 
   const reload = useCallback(async (silent = false) => {
     const my = ++gen.current;
-    if (!silent) setLoading(true);
+    if (!silent) {
+      setLoading(true);
+      setItems([]);
+      setCursor(null);
+      setError(null);
+    }
     try {
       const page = await fnRef.current(null);
       if (my !== gen.current) return;
@@ -59,7 +68,7 @@ export function usePaged<T>(fetchPage: (cursor: string | null) => Promise<Page<T
       setItems((prev) => [...prev, ...page.items]);
       setCursor(page.next_cursor);
     } catch (e) {
-      setError(e);
+      if (my === gen.current) setError(e);
     } finally {
       setLoadingMore(false);
     }

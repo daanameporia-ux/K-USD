@@ -83,14 +83,17 @@ class MockProvider:
             if status not in ("paid", "failed", "expired"):
                 raise CallbackParseError(f"unknown status {status!r}")
             amount = doc.get("amount_rub")
-            if amount is not None and (not isinstance(amount, int) or isinstance(amount, bool)):
-                raise CallbackParseError("amount_rub must be an integer")
+            if amount is not None and (not isinstance(amount, int) or isinstance(amount, bool) or amount < 0):
+                raise CallbackParseError("amount_rub must be a non-negative integer")
+            payer = doc.get("payer")
+            if payer is not None and not isinstance(payer, dict):
+                raise CallbackParseError("payer must be an object")
             return CallbackEvent(
                 event_key=str(doc["event_id"]),
                 provider_payment_id=str(doc["payment_id"]),
                 status=status,
                 amount_rub=amount,
-                payer_info=doc.get("payer"),
+                payer_info=payer,
                 raw=doc,
             )
         except (ValueError, KeyError, TypeError) as exc:

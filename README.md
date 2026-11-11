@@ -81,6 +81,9 @@ nano .env
 | `MOCK_PROVIDER_SECRET` | случайная строка из 20+ символов |
 | `ALLOW_MOCK_IN_PROD` | `true`, пока вы тестируете на mock-провайдере; уберите, когда подключите реального |
 | `TRON_API_KEY` | необязательно: ключ [TronGrid](https://www.trongrid.io) (повышает лимиты запросов) |
+| `RATE_SOURCE_URL` | адрес курса Rapira — оставьте как есть |
+| `TRON_API_URL` | адрес TronGrid — оставьте как есть |
+| `BSC_RPC_URLS` | узлы сети BSC через запятую; если один недоступен, используется следующий — оставьте как есть |
 | `ENV` | `prod` |
 
 Случайную строку можно получить командой:
@@ -123,7 +126,7 @@ docker compose ps
 
 Сотрудник открывает админку командой `/admin` в боте.
 
-Главные администраторы из `SUPERADMIN_TG_IDS` создаются автоматически; через интерфейс их нельзя удалить или понизить.
+Главные администраторы из `SUPERADMIN_TG_IDS` создаются автоматически; через интерфейс их нельзя удалить или понизить. Чтобы лишить человека этого статуса, уберите его ID из `SUPERADMIN_TG_IDS` и перезапустите (`docker compose up -d`): он станет обычным админом, и его можно будет понизить или удалить в «Сотрудниках».
 
 Запасной способ добавить сотрудника — из командной строки сервера:
 
@@ -216,7 +219,7 @@ docker compose exec postgres sh -c 'dropdb -U kusd kusd && createdb -U kusd kusd
 ```
 
 ```bash
-docker compose exec backup sh -c 'gunzip -c /backups/kusd-ДАТА.sql.gz | psql -q'
+docker compose exec backup sh -c 'gunzip -c /backups/kusd-ДАТА.sql.gz | psql -q -v ON_ERROR_STOP=1 --single-transaction'
 ```
 
 3. Запустите снова:
@@ -224,6 +227,19 @@ docker compose exec backup sh -c 'gunzip -c /backups/kusd-ДАТА.sql.gz | psql
 ```bash
 docker compose up -d
 ```
+
+---
+
+### Бот не отвечает
+
+1. Проверьте логи: `docker compose logs --tail=100 app` (ищите `bot_setup_failed` или `tg_network_error`).
+2. Если менялись домен или `TELEGRAM_WEBHOOK_SECRET`, или сервер стартовал раньше, чем заработал DNS, — заново зарегистрируйте webhook (приложение и само повторяет попытки каждые несколько минут):
+
+```bash
+docker compose exec app python -m app.cli set-webhook
+```
+
+3. Проверьте `https://ваш-домен/readyz`: в ответе `bot_configured` должно быть `true`.
 
 ---
 
@@ -246,23 +262,25 @@ docker compose up -d
 
 ## Для разработчика
 
-Локальный запуск без домена (бот в режиме polling, mock-провайдер, без Caddy):
+Локальный запуск без домена (бот в режиме polling, mock-провайдер, без Caddy; нужен `BOT_TOKEN` тестового бота в `.env`):
 
 ```bash
 docker compose -f docker-compose.dev.yml up --build
 ```
 
+Бот работает сразу. Mini App и админка внутри Telegram открываются только по `https://`, поэтому для их проверки пробросьте порт 8000 HTTPS-туннелем (например, `cloudflared tunnel --url http://localhost:8000`) и укажите выданный адрес в `PUBLIC_BASE_URL`. База dev-окружения доступна на `127.0.0.1:5433` (переменная `DEV_PG_PORT`).
+
 Бэкенд и тесты (нужен PostgreSQL 16, `TEST_DATABASE_URL`):
 
 ```bash
-cd backend && python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+cd backend && python3.12 -m venv .venv && .venv/bin/pip install -c requirements.lock -e ".[dev]"
 ```
 
 ```bash
-cd backend && ./check.sh
+./check.sh
 ```
 
-Фронтенд:
+Фронтенд (smoke-тест использует Playwright с Chromium: `npm install --no-save playwright@1.63.0 && npx playwright install chromium`):
 
 ```bash
 cd frontend && npm ci && npm run typecheck && npm test && npm run build && npm run e2e

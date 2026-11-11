@@ -5,6 +5,10 @@
 {$DOMAIN} {
 	encode gzip zstd
 
+	request_body {
+		max_size 1MB
+	}
+
 	header {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"

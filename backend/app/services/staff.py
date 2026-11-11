@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, func, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import StaffRole, SubjectType
 from app.domain.errors import Conflict, Forbidden, NotFound, ServiceError
+from app.domain.text import escape_html
 from app.models import AuditLog, Staff, User
 from app.services import audit, auth, notify
 from app.services.actor import Actor
@@ -19,6 +22,7 @@ if TYPE_CHECKING:
     from app.container import Container
 
 INVITE_TTL = timedelta(hours=48)
+USERNAME_RE = re.compile(r"[A-Za-z0-9_]{4,32}")
 
 
 def actor_of(staff: Staff) -> Actor:
@@ -31,11 +35,17 @@ def _snapshot(s: Staff) -> dict[str, Any]:
 
 def _label(s: Staff) -> str:
     if s.tg_username:
-        return f"@{s.tg_username}"
+        return f"@{escape_html(s.tg_username)}"
     return f"tg {s.tg_id}" if s.tg_id else f"#{s.id}"
 
 
 async def sync_superadmins(session: AsyncSession, tg_ids: list[int], now: datetime) -> None:
+    # IDs removed from SUPERADMIN_TG_IDS lose the protected status (they stay admins and can be managed normally)
+    await session.execute(
+        sa_update(Staff)
+        .where(Staff.is_superadmin.is_(True), Staff.tg_id.not_in(tg_ids or [-1]))
+        .values(is_superadmin=False)
+    )
     for tg_id in tg_ids:
         row: Staff | None = (await session.execute(select(Staff).where(Staff.tg_id == tg_id))).scalar_one_or_none()
         if row is None:
@@ -86,6 +96,8 @@ async def add(
     role = StaffRole(role)
     now = c.clock.now()
     username = (username or "").strip().lstrip("@") or None
+    if username is not None and not USERNAME_RE.fullmatch(username):
+        raise ServiceError("invalid_username", "Ник Telegram: 5–32 символа, латинские буквы, цифры и подчёркивание.")
     if (tg_id is None) == (username is None):
         raise ServiceError("bad_request", "Укажите Telegram ID или @username.")
     async with c.db.begin() as session:
@@ -181,9 +193,14 @@ async def bind_invite(c: Container, tg_id: int, username: str | None) -> Staff |
             inviter = await session.get(Staff, invite.invited_by)
             if inviter is not None and inviter.tg_id is not None:
                 await notify.message(
-                    session, inviter.tg_id, f"✅ @{username} принял приглашение и теперь сотрудник.", now=now
+                    session,
+                    inviter.tg_id,
+                    f"✅ @{escape_html(username)} принял приглашение и теперь сотрудник.",
+                    now=now,
                 )
-        await notify.alert(session, f"👤 @{username} привязан как сотрудник ({invite.role.value}).", now=now)
+        await notify.alert(
+            session, f"👤 @{escape_html(username)} привязан как сотрудник ({invite.role.value}).", now=now
+        )
     from app.telegram.setup import set_staff_commands
 
     await set_staff_commands(c, tg_id)
@@ -227,7 +244,11 @@ async def update(
             after=_snapshot(staff),
             ip=ip,
         )
-        await notify.alert(session, f"👤 Сотрудник {_label(staff)} изменён: {before} → {_snapshot(staff)}", now=now)
+        await notify.alert(
+            session,
+            f"👤 Сотрудник {_label(staff)} изменён: {escape_html(before)} → {escape_html(_snapshot(staff))}",
+            now=now,
+        )
         return staff
 
 

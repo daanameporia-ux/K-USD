@@ -63,13 +63,15 @@ class Container:
         from app.api.deps import RateLimiter
 
         self.limiter = RateLimiter()
-        self.payments = build_registry(config, self.db, self.clock)
+        self.payments = build_registry(config, self.db, self.clock, self.http)
         self.verifiers: dict[Network, ChainVerifier] = {
             Network.TRC20: TronVerifier(self.http, config.tron_api_url, config.tron_api_key),
             Network.BEP20: BscVerifier(self.http, config.bsc_rpc_urls),
         }
         self._polling_task: asyncio.Task[None] | None = None
         self._polling_stop = asyncio.Event()
+        self._setup_task: asyncio.Task[None] | None = None
+        self.bot_configured = False
         from app.jobs.registry import build_scheduler
 
         self.scheduler = build_scheduler(self)
@@ -87,21 +89,48 @@ class Container:
         from app.telegram.setup import configure_bot
 
         staff_ids = await self.sync_superadmins()
-        await configure_bot(self, staff_ids)
+        self.bot_configured = await configure_bot(self, staff_ids)
+        if not self.bot_configured:
+            # e.g. Telegram unreachable or DNS not propagated yet on the first deploy: keep retrying
+            self._setup_task = asyncio.create_task(self._retry_bot_setup(staff_ids))
         if self.config.run_scheduler:
             self.scheduler.start()
         if self.config.bot_mode == "polling":
             self._polling_stop = asyncio.Event()
             self._polling_task = asyncio.create_task(self.dispatcher.run_polling(self._polling_stop))
 
+    async def _retry_bot_setup(self, staff_ids: list[int]) -> None:
+        from app.services import notify
+        from app.telegram.setup import configure_bot
+
+        delay = 30.0
+        alerted = False
+        while not self.bot_configured:
+            await asyncio.sleep(delay)
+            self.bot_configured = await configure_bot(self, staff_ids)
+            if not self.bot_configured and not alerted:
+                alerted = True
+                with suppress(Exception):
+                    async with self.db.begin() as session:
+                        await notify.alert(
+                            session,
+                            "❗ Не удаётся настроить бота (webhook/команды). Повторяю попытки.",
+                            now=self.clock.now(),
+                        )
+            delay = min(delay * 2, 600.0)
+
     async def shutdown(self) -> None:
+        if self._setup_task is not None:
+            self._setup_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._setup_task
         if self._polling_task is not None:
             self._polling_stop.set()
             self._polling_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await self._polling_task
-        await self.dispatcher.drain(20.0)
-        await self.scheduler.stop()
+        # one shared 20 s budget for in-flight updates and running jobs (fits stop_grace_period)
+        await asyncio.gather(self.dispatcher.drain(20.0), self.scheduler.stop(20.0))
         await self.aclose()
 
     async def sync_superadmins(self) -> list[int]:

@@ -29,9 +29,10 @@ def _dec(value: Any) -> Decimal | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return Decimal(str(value))
-    except InvalidOperation:
+        d = Decimal(str(value))
+    except (InvalidOperation, ValueError):
         return None
+    return d if d.is_finite() else None
 
 
 def _jsonable(value: Any) -> Any:
@@ -50,7 +51,7 @@ def parse_rapira(body: bytes | str, field: str = "askPrice") -> ParsedRate:
         raise RateParseError(f"unsupported rate field {field!r}")
     try:
         doc = json.loads(body, parse_float=Decimal, parse_int=Decimal)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, ArithmeticError) as exc:
         raise RateParseError("response is not valid JSON") from exc
     if not isinstance(doc, dict):
         raise RateParseError("response is not a JSON object")
@@ -69,6 +70,8 @@ def parse_rapira(body: bytes | str, field: str = "askPrice") -> ParsedRate:
         raise RateParseError(f"{field} is missing or not a number")
     if value <= 0:
         raise RateParseError(f"{field} is not positive: {value}")
+    if value >= Decimal(10) ** 14:
+        raise RateParseError(f"{field} is out of range: {value}")
     return ParsedRate(
         symbol=SYMBOL,
         ask=_dec(item.get("askPrice")),

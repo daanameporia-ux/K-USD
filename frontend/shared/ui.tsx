@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import { ApiError } from "./api";
 import { copyText } from "./telegram";
 import { statusTone } from "./format";
@@ -8,24 +8,37 @@ export function errorMessage(e: unknown): string {
   return "Что-то пошло не так, попробуйте ещё раз.";
 }
 
-/** Load data with loading / error states and a reload function. */
+/**
+ * Load data with loading / error states and a reload function.
+ * Every reload() and setData() bumps a request counter; a response of an older reload is dropped, so a poll
+ * started before an action can never overwrite the state the action put in (or a newer reload fetched).
+ */
 export function useLoad<T>(fn: () => Promise<T>, deps: unknown[] = []) {
-  const [data, setData] = useState<T | null>(null);
+  const [data, setDataState] = useState<T | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
   const fnRef = useRef(fn);
   fnRef.current = fn;
+  const seq = useRef(0);
   const reload = useCallback(async (silent = false) => {
+    const my = ++seq.current;
     if (!silent) setLoading(true);
     try {
       const value = await fnRef.current();
-      setData(value);
+      if (my !== seq.current) return;
+      setDataState(value);
       setError(null);
     } catch (e) {
-      setError(e);
+      if (my === seq.current) setError(e);
     } finally {
-      setLoading(false);
+      if (my === seq.current) setLoading(false);
     }
+  }, []);
+  const setData = useCallback((value: SetStateAction<T | null>) => {
+    seq.current += 1; // invalidate reloads still in flight
+    setDataState(value);
+    setError(null);
+    setLoading(false);
   }, []);
   useEffect(() => {
     void reload();

@@ -76,6 +76,10 @@ export function OrderDetailPage() {
   }
 
   const other = parsePositiveInt(otherAmount);
+  // Mock only: the backend accepts a simulated payment for any order that has a provider payment — also an expired /
+  // cancelled one (a payment after the close goes to review).
+  const lateOrder = o.status === "expired" || o.status === "cancelled";
+  const canSimulate = me.is_mock && me.is_admin && (o.status === "pending" || (lateOrder && !!o.provider_payment_id));
 
   return (
     <div className="page">
@@ -151,9 +155,14 @@ export function OrderDetailPage() {
         </Section>
       )}
 
-      {me.is_mock && me.is_admin && o.status === "pending" && (
+      {canSimulate && (
         <Section title="Тестовый платёж (mock)">
           <div className="stack">
+            {lateOrder && (
+              <Notice tone="info">
+                Заявка уже закрыта. Оплата после закрытия не зачисляется автоматически — заявка уйдёт на разбор.
+              </Notice>
+            )}
             {action.view}
             <div className="btn-row">
               <AsyncButton onClick={() => simulate(null)}>Симулировать оплату</AsyncButton>
@@ -184,7 +193,7 @@ export function OrderDetailPage() {
           </div>
         </Section>
       )}
-      {!(o.status === "review" || (me.is_mock && me.is_admin && o.status === "pending")) && action.view}
+      {!(o.status === "review" || canSimulate) && action.view}
       {simResult && <p className="muted small mono">{simResult}</p>}
     </div>
   );

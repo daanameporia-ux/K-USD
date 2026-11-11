@@ -46,10 +46,11 @@ async def test_full_withdraw_flow(bot, container, fake_tg) -> None:
     assert f"<code>{BSC_TO}</code>" in preview
     assert "Списывается с баланса: 120.55 USDT" in preview and "<b>К получению: 118.55 USDT</b>" in preview
     assert "Перевод в другую сеть" in preview
+    preview_id = fake_tg.next_message_id
 
-    await bot.click(40, "wd:confirm", message_id=777)
+    await bot.click(40, "wd:confirm", message_id=preview_id)
     assert "Заявка на вывод <b>W-" in bot.last(40)
-    await bot.click(40, "wd:confirm", message_id=777)
+    await bot.click(40, "wd:confirm", message_id=preview_id)
     assert fake_tg.of("answerCallbackQuery")[-1].params["text"] == texts.WD_ALREADY
     async with container.db() as s:
         (w,) = (await s.execute(select(Withdrawal))).scalars().all()

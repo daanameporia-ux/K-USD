@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.clock import Clock
@@ -33,7 +34,9 @@ class PaymentRegistry:
         return list(self._providers)
 
 
-def build_registry(config: Config, db: async_sessionmaker[AsyncSession], clock: Clock) -> PaymentRegistry:
+def build_registry(
+    config: Config, db: async_sessionmaker[AsyncSession], clock: Clock, http: httpx.AsyncClient | None = None
+) -> PaymentRegistry:
     providers: dict[str, PaymentProvider] = {}
     if config.mock_provider_secret:
         providers["mock"] = MockProvider(config.mock_provider_secret, db, clock)

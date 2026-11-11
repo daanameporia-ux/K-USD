@@ -121,6 +121,12 @@ class BizSettings(BaseModel):
             raise ValueError("order_min_rub не может быть больше order_max_rub")
         if self.af_streak_suspicious > self.af_streak_block:
             raise ValueError("af_streak_suspicious не может быть больше af_streak_block")
+        if self.af_min_orders > self.af_window_orders:
+            raise ValueError("af_min_orders не может быть больше af_window_orders — правило A1 никогда не сработает")
+        if self.rate_max_age_seconds < self.rate_ttl_seconds:
+            raise ValueError(
+                "rate_max_age_seconds не может быть меньше rate_ttl_seconds — курс будет всё время устаревшим"
+            )
         return self
 
     @property

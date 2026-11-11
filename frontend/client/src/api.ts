@@ -1,4 +1,4 @@
-import { ApiClient } from "@shared/api";
+import { ApiClient, networkError } from "@shared/api";
 import { initData } from "@shared/telegram";
 
 export interface Order {
@@ -110,16 +110,26 @@ export interface HistoryItem {
   reject_reason: string | null;
 }
 
+/** Returns the token, null when Telegram rejected the session; throws ApiError(0, "network_error") when offline. */
 async function telegramLogin(): Promise<string | null> {
   const data = initData();
   if (!data) return null;
-  const resp = await fetch("/api/auth/telegram", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ init_data: data, scope: "client" }),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch("/api/auth/telegram", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ init_data: data, scope: "client" }),
+    });
+  } catch {
+    throw networkError();
+  }
   if (!resp.ok) return null;
-  return ((await resp.json()) as { token: string }).token;
+  try {
+    return ((await resp.json()) as { token: string }).token;
+  } catch {
+    throw networkError();
+  }
 }
 
 export const api = new ApiClient({ reauth: telegramLogin });

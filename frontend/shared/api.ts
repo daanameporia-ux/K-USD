@@ -11,6 +11,12 @@ export class ApiError extends Error {
   }
 }
 
+export const NETWORK_ERROR_MESSAGE = "Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.";
+
+export function networkError(): ApiError {
+  return new ApiError(0, "network_error", NETWORK_ERROR_MESSAGE);
+}
+
 export type Reauth = () => Promise<string | null>;
 
 export interface RequestOptions {
@@ -68,17 +74,26 @@ export class ApiClient {
     });
   }
 
-  async raw(method: string, path: string, o: RequestOptions = {}): Promise<Response> {
-    let resp: Response;
+  /** send() that maps any transport failure (offline, DNS, CORS, abort) to the friendly network ApiError. */
+  private async sendSafe(method: string, path: string, o: RequestOptions): Promise<Response> {
     try {
-      resp = await this.send(method, path, o);
+      return await this.send(method, path, o);
     } catch {
-      throw new ApiError(0, "network_error", "Нет связи с сервером. Проверьте интернет и попробуйте ещё раз.");
+      throw networkError();
     }
+  }
+
+  async raw(method: string, path: string, o: RequestOptions = {}): Promise<Response> {
+    let resp = await this.sendSafe(method, path, o);
     if (resp.status === 401 && !path.startsWith("/api/auth/")) {
-      const token = await this.reauth();
+      let token: string | null;
+      try {
+        token = await this.reauth();
+      } catch (e) {
+        throw e instanceof ApiError ? e : networkError();
+      }
       if (token) {
-        resp = await this.send(method, path, o); // same idempotency key on retry
+        resp = await this.sendSafe(method, path, o); // same idempotency key on retry
       }
       if (resp.status === 401) this.opts.onUnauthorized?.();
     }
@@ -103,7 +118,13 @@ export class ApiClient {
 
   async request<T>(method: string, path: string, o: RequestOptions = {}): Promise<T> {
     const resp = await this.raw(method, path, o);
-    return (await resp.json()) as T;
+    try {
+      return (await resp.json()) as T;
+    } catch (e) {
+      // Not JSON → server problem; anything else → the body stream broke off (connection lost mid-response).
+      if (e instanceof SyntaxError) throw new ApiError(resp.status, "bad_response", "Ошибка сервера, попробуйте позже.");
+      throw networkError();
+    }
   }
 
   get<T>(path: string): Promise<T> {
@@ -120,19 +141,39 @@ export class ApiClient {
   }
   async blobUrl(path: string): Promise<string> {
     const resp = await this.raw("GET", path);
-    return URL.createObjectURL(await resp.blob());
+    let blob: Blob;
+    try {
+      blob = await resp.blob();
+    } catch {
+      throw networkError();
+    }
+    return URL.createObjectURL(blob);
   }
 }
 
-/** One idempotency key per user attempt: reused for retries, renewed after success or a new attempt. */
+/**
+ * One idempotency key per user attempt: reused only for resending the identical request (retry after a network
+ * failure), renewed after success or as soon as the request parameters change (another amount / address / network).
+ */
 export class Attempt {
   private current: string | null = null;
+  private signature: string | null = null;
   get key(): string {
     if (!this.current) this.current = newIdempotencyKey();
     return this.current;
   }
+  /** The key for a request with these parameters: the same key while they stay the same, a new one when they change. */
+  keyFor(params: unknown): string {
+    const sig = JSON.stringify(params);
+    if (sig !== this.signature) {
+      this.current = null;
+      this.signature = sig;
+    }
+    return this.key;
+  }
   done(): void {
     this.current = null;
+    this.signature = null;
   }
 }
 
