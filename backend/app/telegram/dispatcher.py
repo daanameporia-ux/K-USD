@@ -93,18 +93,19 @@ class Dispatcher:
             except ValidationError:
                 log.warning("tg_update_invalid")
                 return
-            try:
-                if not await self._mark_seen(update.update_id):
-                    log.info("tg_update_duplicate")
-                    return
-            except Exception:
-                log.exception("tg_update_dedup_failed")
-                return
             user = update.from_user
             chat = update.chat
             if user is None or chat is None or user.is_bot or chat.type != "private":
                 return
+            # The lock is taken before any await so updates of one user keep their arrival order.
             async with self.locks(user.id):
+                try:
+                    if not await self._mark_seen(update.update_id):
+                        log.info("tg_update_duplicate")
+                        return
+                except Exception:
+                    log.exception("tg_update_dedup_failed")
+                    return
                 await self._handle(update, user.id, chat.id)
 
     async def _handle(self, update: Update, tg_id: int, chat_id: int) -> None:
