@@ -47,3 +47,11 @@ HELP = (
     "/app — открыть приложение\n/cancel — отменить текущее действие\n\n"
     "Поддержка: {contact}"
 )
+
+BALANCE = (
+    "👛 <b>Баланс</b>\n\n"
+    "Доступно: <b>{available} USDT</b>\n"
+    "В обработке (вывод): {hold} USDT\n\n"
+    "Всего куплено: {bought} USDT\n"
+    "Всего выведено: {withdrawn} USDT"
+)
