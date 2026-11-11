@@ -253,3 +253,39 @@ async def pay(container, order, amount_rub=None, status="paid"):
     paid = order.amount_rub if amount_rub is None else amount_rub
     headers, body = provider.build_callback(order.provider_payment_id, status, paid)
     return await orders.handle_callback(container, "mock", headers, body), headers, body
+
+
+async def fund(container, user, amount) -> None:
+    """Give a user balance through a real deposit entry (paid order)."""
+    from datetime import timedelta
+
+    from app.domain.enums import OrderSource, OrderStatus
+    from app.models import Order
+    from app.services import ledger
+    from app.services import users as users_svc
+
+    now = container.clock.now()
+    async with container.db.begin() as s:
+        u = await users_svc.lock(s, user.id)
+        order = Order(
+            public_id=f"tmp-{now.timestamp()}-{u.id}-{amount}",
+            user_id=u.id,
+            amount_rub=1000,
+            rate=Decimal(100),
+            rate_source="rapira",
+            markup_pct=Decimal(5),
+            usdt_amount=Decimal(amount),
+            margin_rub=Decimal(50),
+            credited_usdt=Decimal(amount),
+            status=OrderStatus.paid,
+            provider="mock",
+            source=OrderSource.bot,
+            created_at=now - timedelta(minutes=5),
+            expires_at=now,
+            paid_at=now,
+            finished_at=now,
+        )
+        s.add(order)
+        await s.flush()
+        order.public_id = f"B-{900000 + order.id}"
+        await ledger.deposit(s, u, Decimal(amount), order_id=order.id, now=now)

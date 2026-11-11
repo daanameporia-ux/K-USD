@@ -10,9 +10,13 @@ import httpx
 from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.chains.base import ChainVerifier
+from app.chains.bsc import BscVerifier
+from app.chains.tron import TronVerifier
 from app.clock import Clock
 from app.config import Config
 from app.db import make_engine, make_sessionmaker
+from app.domain.enums import Network
 from app.kyc.base import KycProvider
 from app.kyc.stub import StubKycProvider
 from app.models import User
@@ -57,6 +61,10 @@ class Container:
         self.kyc: KycProvider = StubKycProvider()
         self.throttle = Throttle()
         self.payments = build_registry(config, self.db, self.clock)
+        self.verifiers: dict[Network, ChainVerifier] = {
+            Network.TRC20: TronVerifier(self.http, config.tron_api_url, config.tron_api_key),
+            Network.BEP20: BscVerifier(self.http, config.bsc_rpc_urls),
+        }
         self._polling_task: asyncio.Task[None] | None = None
         self._polling_stop = asyncio.Event()
         from app.jobs.registry import build_scheduler

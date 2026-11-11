@@ -72,3 +72,36 @@ BUY_CANCEL_ORDER = "✖️ Отменить заявку"
 BUY_ALREADY_CREATED = "Заявка уже создана"
 BUY_ACTIVE_ORDER = "У вас есть активная заявка — оплатите или отмените её:"
 BUY_CREATED = "Заявка создана. QR-код для оплаты:"
+
+WD_CHOOSE_NETWORK = (
+    "📤 <b>Вывод USDT</b>\n\nДоступно к выводу: <b>{available} USDT</b>\nМинимальная сумма: {min} USDT\n\n"
+    "Выберите сеть:"
+)
+WD_NETWORK_BTN = "{name} (комиссия {fee} USDT)"
+WD_ASK_ADDRESS = "Отправьте адрес вашего кошелька USDT в сети <b>{network}</b>."
+WD_ASK_AMOUNT = (
+    "Введите сумму списания в USDT (точность до 2 знаков).\n"
+    "Доступно: <b>{available} USDT</b>, минимум {min} USDT.\nКомиссия сети {fee} USDT вычитается из суммы."
+)
+WD_ALL = "Вывести всё"
+WD_PREVIEW = (
+    "Проверьте вывод:\n\n"
+    "Сеть: <b>{network}</b>\n"
+    "Адрес: <code>{address}</code>\n"
+    "Списывается с баланса: {amount} USDT\n"
+    "Комиссия: {fee} USDT\n"
+    "<b>К получению: {to_send} USDT</b>\n\n"
+    "⚠️ Убедитесь, что адрес принадлежит сети {network}. Перевод в другую сеть приведёт к потере средств."
+)
+WD_CREATED = (
+    "Заявка на вывод <b>{public_id}</b> создана: {to_send} USDT ({network}).\n"
+    "Средства заблокированы до исполнения. Пока заявка в очереди, её можно отменить."
+)
+WD_CANCEL_BTN = "✖️ Отменить вывод"
+WD_CANCELLED = "Вывод <b>{public_id}</b> отменён, {amount} USDT возвращены на баланс."
+WD_ALREADY = "Заявка уже создана"
+
+HISTORY_EMPTY = "Операций пока нет."
+HISTORY_TITLE = "🧾 <b>История</b> (стр. {page})\n\n"
+HISTORY_PREV = "⬅️ Назад"
+HISTORY_NEXT = "Вперёд ➡️"
