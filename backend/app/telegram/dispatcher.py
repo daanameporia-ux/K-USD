@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -145,12 +145,15 @@ class Dispatcher:
                 log.warning("tg_polling_error", exc_info=True)
                 await asyncio.sleep(3)
                 continue
+            if not updates:
+                # long polling returns an empty list only after its timeout; never spin
+                await asyncio.sleep(0.1)
             for raw in updates:
                 offset = int(raw["update_id"]) + 1
                 self.spawn(raw)
 
     async def cleanup_seen(self, older_than: timedelta = timedelta(days=7)) -> int:
-        cutoff = datetime.now(UTC) - older_than
+        cutoff = self.c.clock.now() - older_than
         async with self.c.db.begin() as session:
             result = await session.execute(delete(TgUpdate).where(TgUpdate.received_at < cutoff))
         return int(getattr(result, "rowcount", 0) or 0)

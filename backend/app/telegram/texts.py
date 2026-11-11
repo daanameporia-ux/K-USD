@@ -105,3 +105,5 @@ HISTORY_EMPTY = "Операций пока нет."
 HISTORY_TITLE = "🧾 <b>История</b> (стр. {page})\n\n"
 HISTORY_PREV = "⬅️ Назад"
 HISTORY_NEXT = "Вперёд ➡️"
+
+ADMIN_OPEN = "Админка сервиса:"

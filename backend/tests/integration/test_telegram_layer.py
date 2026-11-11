@@ -221,6 +221,5 @@ async def test_bot_blocked_marks_user(container, fake_tg, updates) -> None:
 async def test_cleanup_seen(container, updates) -> None:
     await container.dispatcher.process(updates.message(1, "/x"))
     assert await container.dispatcher.cleanup_seen() == 0
-    from datetime import timedelta
-
-    assert await container.dispatcher.cleanup_seen(timedelta(seconds=-1)) == 1
+    container.clock.advance(days=8)
+    assert await container.dispatcher.cleanup_seen() == 1

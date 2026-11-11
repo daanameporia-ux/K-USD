@@ -289,3 +289,53 @@ async def fund(container, user, amount) -> None:
         await s.flush()
         order.public_id = f"B-{900000 + order.id}"
         await ledger.deposit(s, u, Decimal(amount), order_id=order.id, now=now)
+
+
+# --- API -------------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def api(container, config):
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    app = create_app(config, container=container)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://example.test") as client:
+        yield client
+
+
+def init_data(tg_id: int, now, username: str | None = "user", token: str | None = None) -> str:
+    import json
+    from urllib.parse import urlencode
+
+    from app.domain.initdata import sign
+
+    fields = {
+        "user": json.dumps({"id": tg_id, "first_name": "U", "username": username}),
+        "auth_date": str(int(now.timestamp())),
+    }
+    fields["hash"] = sign(fields, token or os.environ["BOT_TOKEN"])
+    return urlencode(fields)
+
+
+async def login_client(api, clock, tg_id: int = 500, register: bool = True) -> dict:
+    resp = await api.post("/api/auth/telegram", json={"init_data": init_data(tg_id, clock.now()), "scope": "client"})
+    assert resp.status_code == 200, resp.text
+    headers = {"Authorization": f"Bearer {resp.json()['token']}"}
+    if register:
+        assert (await api.post("/api/client/register", headers=headers)).status_code == 200
+    return headers
+
+
+async def login_staff(api, container, clock, tg_id: int, role: str = "admin") -> dict:
+    from sqlalchemy import select
+
+    from app.models import Staff
+
+    async with container.db.begin() as s:
+        if (await s.execute(select(Staff).where(Staff.tg_id == tg_id))).scalar_one_or_none() is None:
+            s.add(Staff(tg_id=tg_id, role=role))
+    resp = await api.post("/api/auth/telegram", json={"init_data": init_data(tg_id, clock.now()), "scope": "admin"})
+    assert resp.status_code == 200, resp.text
+    return {"Authorization": f"Bearer {resp.json()['token']}"}

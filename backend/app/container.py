@@ -60,6 +60,9 @@ class Container:
         )
         self.kyc: KycProvider = StubKycProvider()
         self.throttle = Throttle()
+        from app.api.deps import RateLimiter
+
+        self.limiter = RateLimiter()
         self.payments = build_registry(config, self.db, self.clock)
         self.verifiers: dict[Network, ChainVerifier] = {
             Network.TRC20: TronVerifier(self.http, config.tron_api_url, config.tron_api_key),
@@ -74,6 +77,11 @@ class Container:
 
     async def on_start(self, ctx: Ctx) -> None:
         """Hook for /start: binds pending staff invitations (see services.staff)."""
+        from app.services import staff as staff_svc
+
+        tg_user = ctx.update.from_user
+        if tg_user is not None:
+            await staff_svc.bind_invite(self, tg_user.id, tg_user.username)
 
     async def startup(self) -> None:
         from app.telegram.setup import configure_bot
@@ -98,7 +106,11 @@ class Container:
 
     async def sync_superadmins(self) -> list[int]:
         """Ensure SUPERADMIN_TG_IDS exist as active superadmins; return tg ids of active staff."""
-        return []
+        from app.services import staff as staff_svc
+
+        async with self.db.begin() as session:
+            await staff_svc.sync_superadmins(session, self.config.superadmin_tg_ids, self.clock.now())
+            return await staff_svc.active_tg_ids(session)
 
     async def mark_bot_blocked(self, tg_id: int) -> None:
         async with self.db.begin() as session:
