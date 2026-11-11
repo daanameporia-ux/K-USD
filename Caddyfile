@@ -1,0 +1,38 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode gzip zstd
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Content-Security-Policy "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	@backend path /api/* /tg/* /healthz /readyz
+	handle @backend {
+		reverse_proxy app:8000
+	}
+
+	handle_path /app/* {
+		root * /srv/frontend/app
+		try_files {path} /index.html
+		file_server
+	}
+	redir /app /app/
+
+	handle_path /admin/* {
+		root * /srv/frontend/admin
+		try_files {path} /index.html
+		file_server
+	}
+	redir /admin /admin/
+
+	handle {
+		redir * /app/
+	}
+}

@@ -1,0 +1,76 @@
+# Production: Caddy (HTTPS) -> app (FastAPI + bot webhook) -> PostgreSQL, plus daily backups.
+name: kusd
+
+services:
+  caddy:
+    build:
+      context: .
+      target: caddy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+  app:
+    build:
+      context: .
+      target: app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://kusd:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/kusd
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "10" }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kusd
+      POSTGRES_USER: kusd
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kusd -d kusd"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # not published: reachable only from the compose network
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: kusd
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: kusd
+      BACKUP_KEEP_DAYS: "14"
+    volumes:
+      - ./scripts/backup.sh:/backup.sh:ro
+      - backups:/backups
+    entrypoint: ["sh", "/backup.sh"]
+
+volumes:
+  pgdata:
+  backups:
+  caddy_data:
+  caddy_config:
