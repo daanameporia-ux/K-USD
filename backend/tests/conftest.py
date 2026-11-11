@@ -173,3 +173,83 @@ class BotDriver:
 @pytest.fixture
 def bot(container, fake_tg, updates) -> BotDriver:
     return BotDriver(container, fake_tg, updates)
+
+
+# --- domain helpers ------------------------------------------------------------------
+
+from decimal import Decimal  # noqa: E402
+
+
+async def seed_rate(container, value="100", at=None) -> None:
+    from app.models import Rate
+
+    async with container.db.begin() as s:
+        s.add(
+            Rate(
+                source="rapira",
+                symbol="USDT/RUB",
+                ask=Decimal(value),
+                bid=Decimal(value),
+                value=Decimal(value),
+                accepted=True,
+                raw={},
+                fetched_at=at or container.clock.now(),
+            )
+        )
+
+
+async def make_user(container, tg_id=100, markup="5", **kw):
+    from app.domain.enums import KycStatus, UserStatus
+    from app.models import User
+
+    async with container.db.begin() as s:
+        user = User(
+            tg_id=tg_id,
+            markup_pct=Decimal(markup),
+            status=UserStatus.active,
+            kyc_status=KycStatus.passed,
+            created_at=container.clock.now(),
+            registered_at=container.clock.now(),
+            **kw,
+        )
+        s.add(user)
+        await s.flush()
+        return user
+
+
+async def make_staff(container, tg_id=1000, role="admin", **kw):
+    from app.models import Staff
+
+    async with container.db.begin() as s:
+        staff = Staff(tg_id=tg_id, role=role, **kw)
+        s.add(staff)
+        await s.flush()
+        return staff
+
+
+async def reload(container, model, id_):
+    async with container.db() as s:
+        return await s.get(model, id_)
+
+
+async def outbox(container, chat_id=None) -> list[dict]:
+    from sqlalchemy import select
+
+    from app.models import NotificationOutbox
+
+    async with container.db() as s:
+        rows = (await s.execute(select(NotificationOutbox).order_by(NotificationOutbox.id))).scalars().all()
+    return [
+        {"chat_id": r.chat_id, "method": r.payload["method"], **r.payload["params"]}
+        for r in rows
+        if chat_id is None or r.chat_id == chat_id
+    ]
+
+
+async def pay(container, order, amount_rub=None, status="paid"):
+    from app.services import orders
+
+    provider = container.payments.get("mock")
+    paid = order.amount_rub if amount_rub is None else amount_rub
+    headers, body = provider.build_callback(order.provider_payment_id, status, paid)
+    return await orders.handle_callback(container, "mock", headers, body), headers, body

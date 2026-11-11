@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import health, telegram_webhook
+from app.api import health, payments_callback, telegram_webhook
 from app.config import Config, get_config
 from app.container import Container
 from app.logging import setup_logging
@@ -35,6 +35,7 @@ def create_app(config: Config | None = None, *, container: Container | None = No
     app.state.container = container
     app.include_router(health.router)
     app.include_router(telegram_webhook.router)
+    app.include_router(payments_callback.router)
     return app
 
 

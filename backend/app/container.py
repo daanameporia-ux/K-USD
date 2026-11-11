@@ -16,6 +16,7 @@ from app.db import make_engine, make_sessionmaker
 from app.kyc.base import KycProvider
 from app.kyc.stub import StubKycProvider
 from app.models import User
+from app.payments.registry import build_registry
 from app.services.notify import Throttle
 from app.telegram.client import TelegramClient
 from app.telegram.dispatcher import Dispatcher
@@ -55,6 +56,7 @@ class Container:
         )
         self.kyc: KycProvider = StubKycProvider()
         self.throttle = Throttle()
+        self.payments = build_registry(config, self.db, self.clock)
         self._polling_task: asyncio.Task[None] | None = None
         self._polling_stop = asyncio.Event()
         from app.jobs.registry import build_scheduler
