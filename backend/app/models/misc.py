@@ -127,9 +127,7 @@ class AddressBlacklist(Base):
 class NotificationOutbox(Base):
     __tablename__ = "notifications_outbox"
     __table_args__ = (
-        Index(
-            "ix_outbox_due", "next_attempt_at", postgresql_where=text("sent_at IS NULL AND failed = false")
-        ),
+        Index("ix_outbox_due", "next_attempt_at", postgresql_where=text("sent_at IS NULL AND failed = false")),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

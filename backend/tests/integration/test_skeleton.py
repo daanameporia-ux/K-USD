@@ -48,9 +48,7 @@ def test_config_parses_lists(monkeypatch) -> None:
 async def test_db_constraints_present(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.execute(
-            text(
-                "INSERT INTO users (tg_id, status, kyc_status, markup_pct) VALUES (1, 'active', 'passed', 5)"
-            )
+            text("INSERT INTO users (tg_id, status, kyc_status, markup_pct) VALUES (1, 'active', 'passed', 5)")
         )
     with pytest.raises(IntegrityError):
         async with engine.begin() as conn:

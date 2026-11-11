@@ -35,14 +35,10 @@ class Withdrawal(Base):
     amount: Mapped[Decimal] = mapped_column(USDT, nullable=False)
     fee: Mapped[Decimal] = mapped_column(USDT, nullable=False)
     amount_to_send: Mapped[Decimal] = mapped_column(USDT, nullable=False)
-    status: Mapped[WithdrawalStatus] = mapped_column(
-        pg_enum(WithdrawalStatus, "withdrawal_status"), nullable=False
-    )
+    status: Mapped[WithdrawalStatus] = mapped_column(pg_enum(WithdrawalStatus, "withdrawal_status"), nullable=False)
     tx_hash: Mapped[str | None] = mapped_column(Text)
     verify_status: Mapped[VerifyStatus | None] = mapped_column(pg_enum(VerifyStatus, "verify_status"))
-    verify_details: Mapped[dict[str, Any]] = mapped_column(
-        nullable=False, default=dict, server_default=text("'{}'")
-    )
+    verify_details: Mapped[dict[str, Any]] = mapped_column(nullable=False, default=dict, server_default=text("'{}'"))
     verify_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_verify_at: Mapped[datetime | None]
     hash_submitted_at: Mapped[datetime | None]

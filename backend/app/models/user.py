@@ -30,9 +30,7 @@ class User(Base):
     kyc_status: Mapped[KycStatus] = mapped_column(
         pg_enum(KycStatus, "kyc_status"), nullable=False, default=KycStatus.none
     )
-    kyc_data: Mapped[dict[str, Any]] = mapped_column(
-        nullable=False, default=dict, server_default=text("'{}'")
-    )
+    kyc_data: Mapped[dict[str, Any]] = mapped_column(nullable=False, default=dict, server_default=text("'{}'"))
     markup_pct: Mapped[Decimal] = mapped_column(PCT, nullable=False)
     order_min_rub: Mapped[int | None] = mapped_column(Integer)
     order_max_rub: Mapped[int | None] = mapped_column(Integer)

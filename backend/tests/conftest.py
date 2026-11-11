@@ -86,3 +86,55 @@ async def clean_db(request: pytest.FixtureRequest) -> AsyncIterator[None]:
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
     yield
+
+
+# --- container & fakes ---------------------------------------------------------------
+
+from datetime import UTC, datetime  # noqa: E402
+
+from app.clock import FakeClock  # noqa: E402
+from tests.fakes import FakeTelegram, UpdateFactory  # noqa: E402
+
+
+class SleepRecorder:
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    async def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock(datetime(2026, 11, 11, 9, 0, tzinfo=UTC))
+
+
+@pytest.fixture
+def fake_tg() -> FakeTelegram:
+    return FakeTelegram()
+
+
+@pytest.fixture
+def tg_sleep() -> SleepRecorder:
+    return SleepRecorder()
+
+
+@pytest.fixture
+def updates() -> UpdateFactory:
+    return UpdateFactory()
+
+
+@pytest.fixture
+def container_kwargs() -> dict:
+    return {}
+
+
+@pytest.fixture
+async def container(config, engine, fake_tg, clock, tg_sleep, container_kwargs):
+    from app.container import Container
+
+    c = Container(
+        config, engine=engine, tg_transport=fake_tg.transport(), clock=clock, tg_sleep=tg_sleep, **container_kwargs
+    )
+    yield c
+    await c.aclose()

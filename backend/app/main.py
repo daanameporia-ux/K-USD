@@ -7,21 +7,32 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import health
+from app.api import health, telegram_webhook
 from app.config import Config, get_config
+from app.container import Container
 from app.logging import setup_logging
 
 
-def create_app(config: Config | None = None) -> FastAPI:
+def create_app(config: Config | None = None, *, container: Container | None = None) -> FastAPI:
     cfg = config or get_config()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        yield
+        own = app.state.container is None
+        if own:
+            app.state.container = Container(cfg)
+        try:
+            yield
+        finally:
+            await app.state.container.dispatcher.drain()
+            if own:
+                await app.state.container.aclose()
 
     app = FastAPI(title="K-USD", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.config = cfg
+    app.state.container = container
     app.include_router(health.router)
+    app.include_router(telegram_webhook.router)
     return app
 
 
