@@ -11,10 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.clock import Clock
 from app.config import Config
 from app.db import make_engine, make_sessionmaker
+from app.kyc.base import KycProvider
+from app.kyc.stub import StubKycProvider
 from app.models import User
 from app.telegram.client import TelegramClient
 from app.telegram.dispatcher import Dispatcher
-from app.telegram.router import Router
+from app.telegram.handlers import build_router
+from app.telegram.handlers.base import load_user
+from app.telegram.router import Ctx, Router
 
 
 class Container:
@@ -46,7 +50,11 @@ class Container:
             on_bot_blocked=self.mark_bot_blocked,
             **tg_kwargs,
         )
-        self.dispatcher = Dispatcher(self, router or Router())
+        self.kyc: KycProvider = StubKycProvider()
+        self.dispatcher = Dispatcher(self, router or build_router(), before=load_user)
+
+    async def on_start(self, ctx: Ctx) -> None:
+        """Hook for /start: binds pending staff invitations (see services.staff)."""
 
     async def mark_bot_blocked(self, tg_id: int) -> None:
         async with self.db.begin() as session:

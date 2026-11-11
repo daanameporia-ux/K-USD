@@ -138,3 +138,38 @@ async def container(config, engine, fake_tg, clock, tg_sleep, container_kwargs):
     )
     yield c
     await c.aclose()
+
+
+class BotDriver:
+    """Drives the bot through the dispatcher like Telegram would."""
+
+    def __init__(self, container, fake_tg: FakeTelegram, factory: UpdateFactory) -> None:
+        self.c = container
+        self.tg = fake_tg
+        self.f = factory
+
+    async def send(self, tg_id: int, text: str, **kw) -> None:
+        await self.c.dispatcher.process(self.f.message(tg_id, text, **kw))
+
+    async def click(self, tg_id: int, data: str, **kw) -> None:
+        await self.c.dispatcher.process(self.f.callback(tg_id, data, **kw))
+
+    def last(self, tg_id: int) -> str:
+        return self.tg.last_text(tg_id)
+
+    def buttons(self, tg_id: int) -> list[dict]:
+        markup = self.tg.last_markup(tg_id) or {}
+        rows = markup.get("inline_keyboard") or markup.get("keyboard") or []
+        return [b for row in rows for b in row]
+
+    def callback_data(self, tg_id: int) -> list[str]:
+        return [b["callback_data"] for b in self.buttons(tg_id) if "callback_data" in b]
+
+    async def register(self, tg_id: int, username: str | None = None) -> None:
+        await self.send(tg_id, "/start", username=username)
+        await self.click(tg_id, "reg:start", username=username)
+
+
+@pytest.fixture
+def bot(container, fake_tg, updates) -> BotDriver:
+    return BotDriver(container, fake_tg, updates)
