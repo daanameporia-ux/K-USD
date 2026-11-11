@@ -1,0 +1,16 @@
+.page { max-width: 560px; margin: 0 auto; padding: 12px 12px 32px; }
+.topbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.topbar h1 { margin: 0; font-size: 20px; flex: 1; }
+.back { border: 0; background: transparent; color: var(--link); font: inherit; padding: 6px 4px; cursor: pointer; }
+.balance { font-size: 32px; font-weight: 700; margin: 4px 0; font-variant-numeric: tabular-nums; }
+.quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.quick .chip { padding: 8px 4px; font-size: 13px; text-align: center; }
+.big-usdt { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.qr { display: block; width: 100%; max-width: 280px; margin: 0 auto; aspect-ratio: 1; background: #fff; border-radius: 12px; padding: 8px; }
+.timer { font-size: 28px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+.list-item { display: flex; justify-content: space-between; gap: 8px; cursor: pointer; }
+.list-item + .list-item { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+.steps { display: flex; gap: 4px; margin-bottom: 12px; }
+.steps span { flex: 1; height: 4px; border-radius: 2px; background: var(--border); }
+.steps span.on { background: var(--accent); }
+.net { display: flex; justify-content: space-between; align-items: center; width: 100%; text-align: left; }
