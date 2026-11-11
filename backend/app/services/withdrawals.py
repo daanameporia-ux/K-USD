@@ -225,8 +225,10 @@ async def create(
             f"({NETWORK[network]}), клиент {who}.",
             now=now,
         )
-        await antifraud.on_withdrawal_created(session, user, w, biz, now)
-        return CreateResult(w, True)
+        shared_with = await antifraud.on_withdrawal_created(session, user, w, biz, now)
+    if shared_with:
+        await antifraud.flag_shared_address(c, shared_with, w.id)
+    return CreateResult(w, True)
 
 
 async def _lock(session: AsyncSession, withdrawal_id: int) -> Withdrawal:
