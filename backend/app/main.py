@@ -21,12 +21,14 @@ def create_app(config: Config | None = None, *, container: Container | None = No
         own = app.state.container is None
         if own:
             app.state.container = Container(cfg)
+            await app.state.container.startup()
         try:
             yield
         finally:
-            await app.state.container.dispatcher.drain()
             if own:
-                await app.state.container.aclose()
+                await app.state.container.shutdown()
+            else:
+                await app.state.container.dispatcher.drain()
 
     app = FastAPI(title="K-USD", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.config = cfg
