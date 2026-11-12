@@ -86,6 +86,12 @@ async def lock(session: AsyncSession, user_id: int) -> User:
     return user
 
 
+def _refuse_blocked(user: User) -> None:
+    """A blocked client must never get through registration: passing a step sets status back to active."""
+    if user.status == UserStatus.blocked:
+        raise Forbidden("Ваш аккаунт заблокирован. Обратитесь в поддержку.", code="user_blocked")
+
+
 async def _apply_step(session: AsyncSession, user: User, step: KycStep, now: datetime) -> KycStep:
     if step.status == "passed":
         biz = await settings_svc.load(session)
@@ -103,8 +109,7 @@ async def _apply_step(session: AsyncSession, user: User, step: KycStep, now: dat
 
 async def start_registration(session: AsyncSession, kyc: KycProvider, user_id: int, now: datetime) -> KycStep:
     user = await lock(session, user_id)
-    if user.status == UserStatus.blocked:
-        raise Forbidden("Ваш аккаунт заблокирован. Обратитесь в поддержку.", code="user_blocked")
+    _refuse_blocked(user)
     if is_active(user):
         return KycStep(status="passed")
     return await _apply_step(session, user, await kyc.start(user), now)
@@ -114,6 +119,7 @@ async def registration_input(
     session: AsyncSession, kyc: KycProvider, user_id: int, data: KycInput, now: datetime
 ) -> KycStep:
     user = await lock(session, user_id)
+    _refuse_blocked(user)
     if is_active(user):
         return KycStep(status="passed")
     return await _apply_step(session, user, await kyc.handle_input(user, data), now)

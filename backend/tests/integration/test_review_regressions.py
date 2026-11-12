@@ -12,7 +12,15 @@ import pytest
 import respx
 from sqlalchemy import select
 
-from app.domain.enums import Network, OrderSource, OrderStatus, StaffRole, VerifyStatus, WithdrawalStatus
+from app.domain.enums import (
+    Network,
+    OrderSource,
+    OrderStatus,
+    StaffRole,
+    UserStatus,
+    VerifyStatus,
+    WithdrawalStatus,
+)
 from app.domain.errors import ServiceError
 from app.domain.rates import RateParseError, parse_rapira
 from app.jobs.outbox import send_notifications
@@ -586,3 +594,17 @@ async def test_500_has_security_headers(config, container, monkeypatch) -> None:
     assert resp.status_code == 500
     assert resp.headers["x-content-type-options"] == "nosniff" and resp.headers["x-request-id"] == "abc"
     assert health is not None and uuid is not None
+
+
+async def test_blocked_client_cannot_unblock_through_registration(api, container, clock) -> None:
+    h = await login_client(api, clock, 731)
+    async with container.db.begin() as s:
+        user = (await s.execute(select(User).where(User.tg_id == 731))).scalar_one()
+        user.status = UserStatus.blocked
+        user.markup_pct = Decimal("9")
+    for body in ({"text": "x"}, {"data": {"a": 1}}, None):
+        resp = await api.post("/api/client/register", headers=h, json=body)
+        assert resp.status_code == 403 and resp.json()["error"]["code"] == "user_blocked", resp.text
+    async with container.db() as s:
+        user = (await s.execute(select(User).where(User.tg_id == 731))).scalar_one()
+    assert user.status == UserStatus.blocked and user.markup_pct == Decimal("9")
