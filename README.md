@@ -287,3 +287,23 @@ cd frontend && npm ci && npm run typecheck && npm test && npm run build && npm r
 ```
 
 Структура: `backend/app` — FastAPI, собственный Telegram-клиент (без библиотек для ботов), сервисы, фоновые задачи; `frontend/client` — клиентский Mini App; `frontend/admin` — админка (браузер и Mini App); `frontend/shared` — общий код.
+
+### Для независимой проверки проекта
+
+С чего начать:
+
+1. `TZ.md` — исходное техническое задание (источник истины).
+2. `docs/REPORT.md` — что проверено, что проверено только на фикстурах, чек-лист безопасности.
+3. `docs/DECISIONS.md` — все отклонения от ТЗ и решения (пп. 51–68 — исправления после первого независимого ревью).
+4. Деньги: `backend/app/services/ledger.py`, `orders.py`, `withdrawals.py`, `antifraud.py`; API: `backend/app/api/`; бот: `backend/app/telegram/`.
+
+Проверки (нужен PostgreSQL 16; по умолчанию тесты используют `postgresql://postgres:postgres@localhost:5432/kusd_test`, другой адрес — через `TEST_DATABASE_URL`):
+
+```bash
+cd backend && ./check.sh --cov=app
+```
+
+```bash
+cd frontend && npm ci && npm run typecheck && npm test && npm run build
+```
+
