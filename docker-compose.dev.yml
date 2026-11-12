@@ -1,0 +1,47 @@
+# Local development: no Caddy, bot in polling mode, mock payment provider.
+# Usage: docker compose -f docker-compose.dev.yml up --build
+name: kusd-dev
+
+services:
+  app:
+    build:
+      context: .
+      target: app
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENV: dev
+      BOT_MODE: polling
+      PAYMENT_PROVIDER: mock
+      BOT_TOKEN: ${BOT_TOKEN:-000000:dev-token-replace-me-in-env-file}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-dev-webhook-secret-123456}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-session-secret-change-me-0123456789}
+      MOCK_PROVIDER_SECRET: ${MOCK_PROVIDER_SECRET:-dev-mock-secret-123456}
+      DATABASE_URL: postgresql://kusd:kusd@postgres:5432/kusd
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kusd
+      POSTGRES_USER: kusd
+      POSTGRES_PASSWORD: kusd
+    ports:
+      - "127.0.0.1:${DEV_PG_PORT:-5433}:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kusd -d kusd"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata_dev:
