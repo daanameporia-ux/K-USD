@@ -18,6 +18,10 @@ from app.services import audit
 
 Pct = Decimal
 
+# Money settings must fit the NUMERIC(20,6) / INTEGER columns they are compared with and written to.
+_USDT: dict[str, Any] = {"max_digits": 18, "decimal_places": 6, "lt": Decimal(10) ** 12}
+_RUB_MAX = 1_000_000_000
+
 
 def parse_cooldowns(value: str) -> list[tuple[int, int]]:
     """'2:5, 3:15, 4:60' -> [(2, 5), (3, 15), (4, 60)] sorted by streak."""
@@ -36,28 +40,28 @@ class BizSettings(BaseModel):
     model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
     # orders
-    order_min_rub: int = Field(1000, ge=1)
-    order_max_rub: int = Field(100000, ge=1)
+    order_min_rub: int = Field(1000, ge=1, le=_RUB_MAX)
+    order_max_rub: int = Field(100000, ge=1, le=_RUB_MAX)
     order_ttl_minutes: int = Field(15, ge=1, le=120)
     default_markup_pct: Decimal = Field(Decimal("5.00"), ge=0, lt=100, decimal_places=2)
     purchases_enabled: bool = True
     # withdrawals
-    withdraw_min_usdt: Decimal = Field(Decimal("50"), gt=0)
-    withdraw_fee_trc20: Decimal = Field(Decimal("4"), ge=0)
-    withdraw_fee_bep20: Decimal = Field(Decimal("2"), ge=0)
-    withdraw_admin_only_from_usdt: Decimal = Field(Decimal("5000"), gt=0)
+    withdraw_min_usdt: Decimal = Field(Decimal("50"), gt=0, **_USDT)
+    withdraw_fee_trc20: Decimal = Field(Decimal("4"), ge=0, **_USDT)
+    withdraw_fee_bep20: Decimal = Field(Decimal("2"), ge=0, **_USDT)
+    withdraw_admin_only_from_usdt: Decimal = Field(Decimal("5000"), gt=0, **_USDT)
     withdrawals_enabled: bool = True
     # rate
     rate_ttl_seconds: int = Field(45, ge=5, le=3600)
-    rate_max_age_seconds: int = Field(180, ge=10)
-    rate_jump_guard_pct: Decimal = Field(Decimal("3"), gt=0)
+    rate_max_age_seconds: int = Field(180, ge=10, le=86400)
+    rate_jump_guard_pct: Decimal = Field(Decimal("3"), gt=0, le=100)
     rate_field: Literal["askPrice", "bidPrice", "close"] = "askPrice"
-    manual_rate: Decimal | None = Field(None, gt=0)
+    manual_rate: Decimal | None = Field(None, ge=Decimal("0.000001"), **_USDT)
     # misc
     support_contact: str = Field("@support", min_length=1, max_length=200)
     # antifraud — main rules
     af_enabled: bool = True
-    af_window_orders: int = Field(30, ge=1)
+    af_window_orders: int = Field(30, ge=1, le=10000)
     af_min_orders: int = Field(10, ge=1)
     af_min_conversion_pct: Decimal = Field(Decimal("80"), ge=0, le=100)
     af_streak_suspicious: int = Field(3, ge=1)
@@ -77,32 +81,32 @@ class BizSettings(BaseModel):
     b6_enabled: bool = True
     # B8 global conversion drop
     b8_enabled: bool = True
-    b8_window_minutes: int = Field(60, ge=5)
+    b8_window_minutes: int = Field(60, ge=5, le=10080)
     b8_min_orders: int = Field(20, ge=1)
     b8_min_conversion_pct: Decimal = Field(Decimal("40"), ge=0, le=100)
     b8_auto_pause: bool = False
     # B9 newcomer limits
     b9_enabled: bool = False
     b9_paid_orders_threshold: int = Field(3, ge=1)
-    b9_max_order_rub: int = Field(20000, ge=1)
-    b9_max_daily_rub: int = Field(50000, ge=1)
+    b9_max_order_rub: int = Field(20000, ge=1, le=_RUB_MAX)
+    b9_max_daily_rub: int = Field(50000, ge=1, le=_RUB_MAX)
     # B10 daily turnover per client
     b10_enabled: bool = False
-    b10_daily_rub: int = Field(300000, ge=1)
+    b10_daily_rub: int = Field(300000, ge=1, le=_RUB_MAX)
     # B11 withdrawal hold after purchase
     b11_enabled: bool = False
-    b11_hold_hours: int = Field(24, ge=1)
+    b11_hold_hours: int = Field(24, ge=1, le=8760)
     # B12 fast transit
     b12_enabled: bool = False
-    b12_window_minutes: int = Field(10, ge=1)
+    b12_window_minutes: int = Field(10, ge=1, le=10080)
     b12_balance_pct: Decimal = Field(Decimal("90"), gt=0, le=100)
     # B13 many payers
     b13_enabled: bool = False
     b13_max_payers: int = Field(3, ge=1)
-    b13_window_days: int = Field(30, ge=1)
+    b13_window_days: int = Field(30, ge=1, le=3650)
     # B14 daily withdrawal limit
     b14_enabled: bool = False
-    b14_daily_usdt: Decimal = Field(Decimal("10000"), gt=0)
+    b14_daily_usdt: Decimal = Field(Decimal("10000"), gt=0, **_USDT)
 
     @field_validator("b3_cooldowns")
     @classmethod

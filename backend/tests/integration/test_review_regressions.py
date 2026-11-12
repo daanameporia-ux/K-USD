@@ -608,3 +608,111 @@ async def test_blocked_client_cannot_unblock_through_registration(api, container
     async with container.db() as s:
         user = (await s.execute(select(User).where(User.tg_id == 731))).scalar_one()
     assert user.status == UserStatus.blocked and user.markup_pct == Decimal("9")
+
+
+# --- audit follow-up: medium findings -----------------------------------------------------
+
+
+async def test_untrusted_callbacks_cannot_flood_the_log(container, clock) -> None:
+    from datetime import timedelta
+
+    from app.jobs import maintenance
+
+    huge = b"\x00" + b"A" * 60_000
+    headers = {"X-Signature": "00" * 32, "X-Junk": "j" * 5000, **{f"X-H{i}": "v" for i in range(100)}}
+    for _ in range(orders.UNTRUSTED_LOG_PER_MINUTE + 20):
+        assert (await orders.handle_callback(container, "mock", headers, huge)).status == 401
+    async with container.db() as s:
+        rows = (await s.execute(select(PaymentCallback))).scalars().all()
+    assert len(rows) == orders.UNTRUSTED_LOG_PER_MINUTE  # the rest is answered but not stored
+    assert all(len(r.body) < 1100 and "\x00" not in r.body and r.body.endswith("[60001 bytes]") for r in rows)
+    assert all(len(r.headers) <= 20 and all(len(v) <= 200 for v in r.headers.values()) for r in rows)
+    clock.advance(seconds=61)
+    assert (await orders.handle_callback(container, "nope", {}, b"{}")).status == 404
+    async with container.db() as s:
+        assert len((await s.execute(select(PaymentCallback))).scalars().all()) == len(rows) + 1
+    # rejected requests are dropped after a week, real payment events are kept
+    clock.advance(seconds=-61)
+    user = await make_user(container, tg_id=7301)
+    await seed_rate(container, "100")
+    order = await create_order(container, user)
+    assert (await pay(container, order))[0].result == "credited"
+    clock.advance(days=8)
+    await maintenance.cleanup(container)
+    async with container.db() as s:
+        left = (await s.execute(select(PaymentCallback))).scalars().all()
+    assert [r.result for r in left] == ["credited"]
+    _ = timedelta
+
+
+async def test_staff_alert_is_not_marked_sent_when_nobody_got_it(container, fake_tg, clock) -> None:
+    gone = {"ok": False, "error_code": 400, "description": "Bad Request: chat not found"}
+    async with container.db.begin() as s:
+        s.add(Staff(role="admin", tg_id=601))
+        row = await notify.alert(s, "ledger broken", now=clock.now())
+    # the staff chat is unreachable: the alert goes to the admins personally, with a note about the chat
+    fake_tg.script("sendMessage", gone)
+    assert await send_notifications(container) == 1
+    calls = fake_tg.of("sendMessage")
+    assert [c.params["chat_id"] for c in calls] == [-100500, 601]
+    assert calls[1].params["text"].startswith("ledger broken") and "STAFF_CHAT_ID" in calls[1].params["text"]
+    async with container.db() as s:
+        fresh = await s.get(type(row), row.id)
+    assert fresh.sent_at is not None and fresh.payload["delivered"] == [601]
+
+    # nobody can be reached at all: the alert is recorded as failed with the reason, never as sent
+    fake_tg.reset()
+    async with container.db.begin() as s:
+        lost = await notify.alert(s, "second", now=clock.now())
+    fake_tg.script("sendMessage", gone, {"ok": False, "error_code": 403, "description": "Forbidden: bot was blocked"})
+    assert await send_notifications(container) == 0
+    async with container.db() as s:
+        fresh = await s.get(type(lost), lost.id)
+    assert fresh.sent_at is None and fresh.failed is True
+    assert "nobody received the alert" in fresh.last_error
+
+
+async def test_b8_does_not_pause_again_right_after_manual_resume(container, user, admin, clock) -> None:
+    from tests.integration.test_antifraud import add_order
+
+    await set_biz(container, b8_auto_pause=True)
+    for i in range(20):
+        await add_order(container, user, OrderStatus.paid if i < 2 else OrderStatus.expired, ago_min=30)
+    await antifraud.global_conversion_watch(container)
+    async with container.db() as s:
+        assert (await settings_svc.load(s)).purchases_enabled is False
+    clock.advance(seconds=60)
+    async with container.db.begin() as s:  # the admin fixed the provider and switched purchases back on
+        await settings_svc.update(s, {"purchases_enabled": True}, staff_id=admin.id, now=clock.now())
+    clock.advance(seconds=300)
+    assert await antifraud.global_conversion_watch(container) is None
+    async with container.db() as s:
+        assert (await settings_svc.load(s)).purchases_enabled is True
+    # a fresh drop after the resume pauses purchases again
+    for i in range(20):
+        await add_order(container, user, OrderStatus.expired, ago_min=1, amount=2000 + i)
+    assert await antifraud.global_conversion_watch(container) is not None
+    async with container.db() as s:
+        assert (await settings_svc.load(s)).purchases_enabled is False
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"manual_rate": "0.0000004"},
+        {"manual_rate": "1e-30"},
+        {"withdraw_fee_trc20": "1E+40"},
+        {"withdraw_fee_bep20": "1.1234567"},
+        {"withdraw_min_usdt": "1000000000000"},
+        {"b14_daily_usdt": "1E+40"},
+        {"order_max_rub": 5_000_000_000},
+        {"b10_daily_rub": 5_000_000_000},
+        {"rate_max_age_seconds": 10**15},
+        {"b13_window_days": 1_000_000},
+    ],
+)
+async def test_money_settings_are_bounded(container, clock, changes) -> None:
+    async with container.db.begin() as s:
+        with pytest.raises(ServiceError) as exc:
+            await settings_svc.update(s, changes, staff_id=None, now=clock.now())
+    assert exc.value.code == "invalid_setting"

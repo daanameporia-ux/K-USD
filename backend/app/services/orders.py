@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -378,6 +378,16 @@ async def apply_event(session: AsyncSession, order: Order, event: CallbackEvent,
     return "credited"
 
 
+# Requests that did not pass the signature check come from anybody on the internet: what they may write to the
+# database is capped per row and per minute, and such rows are deleted after UNTRUSTED_CALLBACK_KEEP.
+UNTRUSTED_BODY_CHARS = 1000
+UNTRUSTED_HEADER_CHARS = 200
+UNTRUSTED_HEADERS = 20
+UNTRUSTED_LOG_PER_MINUTE = 30
+UNTRUSTED_CALLBACK_KEEP = timedelta(days=7)
+UNKEYED_CALLBACK_KEEP = timedelta(days=30)
+
+
 async def _log_callback(
     c: Container,
     provider: str,
@@ -387,13 +397,25 @@ async def _log_callback(
     signature_valid: bool | None,
     result: str,
 ) -> None:
+    text_body = body.decode("utf-8", errors="replace").replace("\x00", "\ufffd")
+    stored_headers = _safe_headers(headers)
+    if signature_valid is not True:
+        if not c.limiter.hit("payment_callback_log", UNTRUSTED_LOG_PER_MINUTE, 60.0, c.clock.now().timestamp()):
+            log.warning("payment_callback_log_skipped", provider=provider, result=result)
+            return
+        if len(text_body) > UNTRUSTED_BODY_CHARS:
+            text_body = f"{text_body[:UNTRUSTED_BODY_CHARS]}… [{len(body)} bytes]"
+        stored_headers = {
+            k[:UNTRUSTED_HEADER_CHARS]: str(v)[:UNTRUSTED_HEADER_CHARS].replace("\x00", "\ufffd")
+            for k, v in list(stored_headers.items())[:UNTRUSTED_HEADERS]
+        }
     async with c.db.begin() as session:
         session.add(
             PaymentCallback(
                 provider=provider,
                 event_key=None,
-                headers=_safe_headers(headers),
-                body=body.decode("utf-8", errors="replace"),
+                headers=stored_headers,
+                body=text_body,
                 signature_valid=signature_valid,
                 processed=False,
                 result=result,
@@ -417,7 +439,7 @@ async def process_event(
                 provider=provider_name,
                 event_key=f"{provider_name}:{event.event_key}",
                 headers=_safe_headers(headers),
-                body=body.decode("utf-8", errors="replace"),
+                body=body.decode("utf-8", errors="replace").replace("\x00", "\ufffd"),
                 signature_valid=True,
                 processed=True,
                 result="processing",
@@ -680,3 +702,19 @@ async def simulate_payment(
             ip=ip,
         )
     return await handle_callback(c, provider.name, headers, body)
+
+
+async def cleanup_callbacks(session: AsyncSession, now: datetime) -> int:
+    """Drop old callback log rows that carry no payment event (rejected, duplicate, unparsable requests)."""
+    stmt = delete(PaymentCallback).where(
+        PaymentCallback.event_key.is_(None),
+        or_(
+            PaymentCallback.created_at < now - UNKEYED_CALLBACK_KEEP,
+            and_(
+                PaymentCallback.signature_valid.is_not(True),
+                PaymentCallback.created_at < now - UNTRUSTED_CALLBACK_KEEP,
+            ),
+        ),
+    )
+    result = await session.execute(stmt)
+    return int(getattr(result, "rowcount", 0) or 0)

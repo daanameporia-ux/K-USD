@@ -99,12 +99,16 @@ async def test_jump_guard_and_accept(container, clock) -> None:
         staff = Staff(role="admin", tg_id=1)
         s.add(staff)
         await s.flush()
-        row = await rates.accept_jump(s, staff_id=staff.id, now=clock.now())
+        pending = await rates.latest(s)
+        with pytest.raises(ServiceError) as stale:  # the value the admin saw has been replaced by a newer fetch
+            await rates.accept_jump(s, rate_id=pending.id - 1, staff_id=staff.id, now=clock.now())
+        assert stale.value.code == "rate_changed" and not pending.accepted
+        row = await rates.accept_jump(s, rate_id=pending.id, staff_id=staff.id, now=clock.now())
         assert row.accepted
     assert (await current(container)).value == Decimal("103.5")
     async with container.db.begin() as s:
         with pytest.raises(ServiceError):
-            await rates.accept_jump(s, staff_id=staff.id, now=clock.now())
+            await rates.accept_jump(s, rate_id=row.id, staff_id=staff.id, now=clock.now())
     # small move after accepting is applied normally
     clock.advance(seconds=45)
     route.mock(return_value=httpx.Response(200, content=rapira("104")))
@@ -125,7 +129,7 @@ async def test_accept_jump_too_old(container, clock) -> None:
         s.add(staff)
         await s.flush()
         with pytest.raises(ServiceError) as exc:
-            await rates.accept_jump(s, staff_id=staff.id, now=clock.now())
+            await rates.accept_jump(s, rate_id=(await rates.latest(s)).id, staff_id=staff.id, now=clock.now())
     assert exc.value.code == "jump_too_old"
 
 
@@ -134,7 +138,10 @@ async def test_manual_rate(container, clock) -> None:
         staff = Staff(role="admin", tg_id=1)
         s.add(staff)
         await s.flush()
-        await rates.set_manual(s, Decimal("95.10"), staff_id=staff.id, now=clock.now())
+        with pytest.raises(ServiceError) as exc:  # nothing to compare with: needs an explicit confirmation
+            await rates.set_manual(s, Decimal("95.10"), staff_id=staff.id, now=clock.now())
+        assert exc.value.code == "manual_rate_unverified"
+        await rates.set_manual(s, Decimal("95.10"), staff_id=staff.id, now=clock.now(), confirm=True)
     cur = await current(container)
     assert cur.value == Decimal("95.10") and cur.source == "manual"
     async with container.db.begin() as s:
@@ -172,3 +179,20 @@ async def test_cleanup_keeps_latest(container, clock) -> None:
         )
     async with container.db.begin() as s:
         assert await rates.cleanup(s, clock.now() - timedelta(days=30)) == 1
+
+
+async def test_manual_rate_is_compared_with_the_market(container, clock) -> None:
+    from tests.conftest import seed_rate
+
+    await seed_rate(container, "95")
+    async with container.db.begin() as s:
+        staff = Staff(role="admin", tg_id=1)
+        s.add(staff)
+        await s.flush()
+        with pytest.raises(ServiceError) as exc:  # 9.5 instead of 95
+            await rates.set_manual(s, Decimal("9.5"), staff_id=staff.id, now=clock.now())
+        assert exc.value.code == "manual_rate_deviates" and exc.value.status == 409
+        assert (await settings_svc.load(s)).manual_rate is None
+        await rates.set_manual(s, Decimal("99"), staff_id=staff.id, now=clock.now())  # within 10 %
+        await rates.set_manual(s, Decimal("9.5"), staff_id=staff.id, now=clock.now(), confirm=True)
+    assert (await current(container)).value == Decimal("9.5")

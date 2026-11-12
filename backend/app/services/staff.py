@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.enums import StaffRole, SubjectType
 from app.domain.errors import Conflict, Forbidden, NotFound, ServiceError
 from app.domain.text import escape_html
-from app.models import AuditLog, Staff, User
+from app.models import AuditLog, Staff
 from app.services import audit, auth, notify
 from app.services.actor import Actor
 
@@ -101,12 +101,8 @@ async def add(
     if (tg_id is None) == (username is None):
         raise ServiceError("bad_request", "Укажите Telegram ID или @username.")
     async with c.db.begin() as session:
-        if username is not None:
-            user = (
-                await session.execute(select(User).where(func.lower(User.tg_username) == username.lower()))
-            ).scalar_one_or_none()
-            if user is not None:
-                tg_id = user.tg_id
+        # A @username is never resolved through `users`: the nick stored there may be stale and belong to
+        # somebody else by now. It always becomes an invitation bound on /start, where Telegram vouches for it.
         if tg_id is not None:
             existing = (await session.execute(select(Staff).where(Staff.tg_id == tg_id))).scalar_one_or_none()
             if existing is not None:

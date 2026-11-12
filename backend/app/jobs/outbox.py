@@ -24,9 +24,7 @@ def backoff(attempts: int) -> timedelta:
     return timedelta(seconds=min(5 * 2**attempts, 900))
 
 
-async def _staff_recipients(c: Container) -> list[int]:
-    if c.config.staff_chat_id is not None:
-        return [c.config.staff_chat_id]
+async def _admin_recipients(c: Container) -> list[int]:
     async with c.db() as session:
         rows = await session.execute(
             select(Staff.tg_id).where(
@@ -34,6 +32,56 @@ async def _staff_recipients(c: Container) -> list[int]:
             )
         )
         return [int(r[0]) for r in rows if r[0] is not None]
+
+
+async def _send_staff_alert(
+    c: Container, method: str, params: dict[str, Any], state: dict[str, Any]
+) -> tuple[str | None, bool]:
+    """Deliver an alert to the staff chat, or to the admins directly when the chat cannot be reached.
+
+    `state` keeps who has got the alert (`delivered`) and who never will (`skipped`) between attempts.
+    Returns (error, permanent). An alert counts as sent only if somebody has really received it.
+    """
+    delivered: list[int] = state["delivered"]
+    skipped: list[int] = state["skipped"]
+    transient: str | None = None
+    lost: str | None = None
+
+    async def deliver(recipients: list[int], payload: dict[str, Any]) -> None:
+        nonlocal transient, lost
+        for chat_id in recipients:
+            if chat_id in delivered or chat_id in skipped:
+                continue
+            try:
+                await _send(c, method, payload, chat_id)
+                delivered.append(chat_id)
+            except TelegramApiError as exc:
+                log.warning("staff_alert_failed", chat_id=chat_id, code=exc.code, description=exc.description)
+                if isinstance(exc, BotBlockedError) or (400 <= exc.code < 500 and exc.code != 429):
+                    skipped.append(chat_id)  # this recipient can never get it; do not retry for them
+                    lost = f"{exc.code}: {exc.description}"
+                else:
+                    transient = f"{exc.code}: {exc.description}"  # retry the remaining recipients later
+
+    staff_chat = c.config.staff_chat_id
+    if staff_chat is not None:
+        await deliver([staff_chat], params)
+        if staff_chat in skipped and not delivered:
+            # The staff chat is gone (bot removed, group migrated, wrong id): alerts must not vanish with it.
+            fallback = dict(params)
+            if method == "sendMessage" and isinstance(fallback.get("text"), str):
+                fallback["text"] += "\n\n⚠️ Служебный чат недоступен, алерт отправлен лично. Проверьте STAFF_CHAT_ID."
+            await deliver(await _admin_recipients(c), fallback)
+    else:
+        await deliver(await _admin_recipients(c), params)
+    if transient is not None:
+        return transient, False
+    if delivered:
+        return None, False
+    if lost is not None:
+        log.error("staff_alert_lost", error=lost)
+        return f"nobody received the alert: {lost}", True
+    return "no staff recipients (STAFF_CHAT_ID is empty and no active admin has a Telegram ID)", False
 
 
 async def _send(c: Container, method: str, params: dict[str, Any], chat_id: int) -> None:
@@ -71,22 +119,13 @@ async def send_notifications(c: Container, batch: int = 50) -> int:
         params = dict(row.payload.get("params") or {})
         error: str | None = None
         permanent = False
-        delivered: list[int] | None = None
+        state: dict[str, Any] | None = None
         if row.chat_id == STAFF_CHAT:
-            delivered = [int(x) for x in row.payload.get("delivered") or []]
-            recipients = [r for r in await _staff_recipients(c) if r not in delivered]
-            if not recipients and not delivered:
-                error = "no staff recipients (STAFF_CHAT_ID is empty and no active admin has a Telegram ID)"
-            for chat_id in recipients:
-                try:
-                    await _send(c, method, params, chat_id)
-                    delivered.append(chat_id)
-                except TelegramApiError as exc:
-                    log.warning("staff_alert_failed", chat_id=chat_id, code=exc.code)
-                    if isinstance(exc, BotBlockedError) or (400 <= exc.code < 500 and exc.code != 429):
-                        delivered.append(chat_id)  # this recipient can never get it; do not retry for them
-                    else:
-                        error = f"{exc.code}: {exc.description}"  # retry the remaining recipients later
+            state = {
+                "delivered": [int(x) for x in row.payload.get("delivered") or []],
+                "skipped": [int(x) for x in row.payload.get("skipped") or []],
+            }
+            error, permanent = await _send_staff_alert(c, method, params, state)
         else:
             try:
                 await _send(c, method, params, row.chat_id)
@@ -100,8 +139,8 @@ async def send_notifications(c: Container, batch: int = 50) -> int:
             if fresh is None:
                 continue
             fresh.attempts += 1
-            if delivered is not None:
-                fresh.payload = {**fresh.payload, "delivered": delivered}
+            if state is not None:
+                fresh.payload = {**fresh.payload, **state}
             if error is None:
                 fresh.sent_at = c.clock.now()
                 sent += 1

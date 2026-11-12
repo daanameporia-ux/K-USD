@@ -22,6 +22,7 @@ def build_scheduler(c: Container) -> Scheduler:
         Job("global_conversion_watch", antifraud.global_conversion_watch, 300),
         Job("expire_invites", staff.expire_invites, 600),
         Job("check_ledger_invariant", maintenance.check_ledger_invariant, 3600),
+        Job("check_backups", maintenance.check_backups, 3600),
         Job("cleanup", maintenance.cleanup, 86400),
     ]
     return Scheduler(c, jobs)

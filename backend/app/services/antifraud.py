@@ -15,7 +15,7 @@ from app.domain.enums import FINISHED_ORDER_STATUSES, AfSeverity, LedgerType, Or
 from app.domain.errors import NotFound, ServiceError
 from app.domain.text import escape_html
 from app.domain.timefmt import MSK, fmt_time, msk_date
-from app.models import AntifraudEvent, LedgerEntry, Order, User, Withdrawal
+from app.models import AntifraudEvent, LedgerEntry, Order, Setting, User, Withdrawal
 from app.services import audit, notify
 from app.services import settings as settings_svc
 from app.services import users as users_svc
@@ -435,6 +435,18 @@ async def global_conversion_watch(c: Container) -> rules.Trigger | None:
         if not (biz.af_enabled and biz.b8_enabled):
             return None
         since = now - timedelta(minutes=biz.b8_window_minutes)
+        if biz.b8_auto_pause and biz.purchases_enabled:
+            # After an admin switched purchases back on, judge only what finished since then: otherwise the same
+            # bad orders would pause purchases again on the next run, until they leave the window.
+            resumed_at = (
+                await session.execute(
+                    select(Setting.updated_at).where(
+                        Setting.key == "purchases_enabled", Setting.updated_by.is_not(None)
+                    )
+                )
+            ).scalar_one_or_none()
+            if resumed_at is not None and resumed_at > since:
+                since = resumed_at
         row = (
             await session.execute(
                 select(

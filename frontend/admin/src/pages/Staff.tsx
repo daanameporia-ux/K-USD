@@ -136,7 +136,7 @@ export function StaffPage() {
             value={who}
             onChange={setWho}
             maxLength={65}
-            hint="По ID доступ появляется сразу. По @username — сразу, если человек уже писал боту, иначе создаётся приглашение на 48 часов."
+            hint="По ID доступ появляется сразу. По @username создаётся приглашение на 48 часов: доступ появится, когда человек отправит боту /start."
           />
           <label className="field">
             <span>Роль</span>

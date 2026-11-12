@@ -51,6 +51,8 @@ class Config(BaseSettings):
     acme_email: str | None = Field(None, alias="ACME_EMAIL")
     frontend_dir: str | None = Field(None, alias="FRONTEND_DIR")
     run_scheduler: bool = Field(True, alias="RUN_SCHEDULER")
+    # Directory with the dumps of the `backup` container (mounted read-only): its state is watched and alerted on.
+    backup_dir: str | None = Field(None, alias="BACKUP_DIR")
 
     @field_validator("superadmin_tg_ids", mode="before")
     @classmethod
@@ -68,7 +70,7 @@ class Config(BaseSettings):
     def _empty_to_none(cls, v: object) -> object:
         return None if v in ("", None) else v
 
-    @field_validator("tron_api_key", "domain", "acme_email", "frontend_dir", mode="before")
+    @field_validator("tron_api_key", "domain", "acme_email", "frontend_dir", "backup_dir", mode="before")
     @classmethod
     def _empty_str_none(cls, v: object) -> object:
         return None if v == "" else v

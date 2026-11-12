@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { Attempt } from "@shared/api";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { formatDateTime, formatRub, formatUsdt, shortAddress } from "@shared/format";
 import { confirmAction } from "@shared/telegram";
@@ -474,6 +475,8 @@ function AdjustBalance({ user, onChanged }: { user: User; onChanged: () => Promi
   const [amount, setAmount] = useState("");
   const [comment, setComment] = useState("");
   const action = useAction();
+  // One idempotency key per adjustment: a retry after a lost response must not post it twice.
+  const attempt = useRef(new Attempt());
   const amountError = amount.trim() ? validateSignedAmount(amount) : null;
   const commentOk = comment.trim().length >= 10;
 
@@ -489,11 +492,14 @@ function AdjustBalance({ user, onChanged }: { user: User; onChanged: () => Promi
     }
     const value = amount.trim().replace(",", ".");
     if (!(await confirmAction(`Изменить баланс клиента на ${value} USDT?`))) return;
+    const body = { amount: value, comment: comment.trim() };
+    const key = attempt.current.keyFor({ user: user.id, ...body });
     const ok = await action.run(
-      () => api.post(adminPath(`/users/${user.id}/adjust-balance`), { amount: value, comment: comment.trim() }),
+      () => api.post(adminPath(`/users/${user.id}/adjust-balance`), body, key),
       "Баланс скорректирован.",
     );
     if (ok) {
+      attempt.current.done();
       setAmount("");
       setComment("");
       await onChanged();

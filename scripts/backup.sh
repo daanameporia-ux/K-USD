@@ -18,11 +18,13 @@ while true; do
      && gunzip -c "$file.tmp" | tail -n 5 | grep -q "dump complete"; then
     mv "$file.tmp" "$file"
     touch /backups/.last_ok
+    rm -f /backups/.last_failed
     echo "backup ok: $file ($(du -h "$file" | cut -f1))"
     # rotate only after a successful dump: keep KEEP days of good copies
     find /backups -maxdepth 1 -name 'kusd-*.sql.gz' -mtime +"$((KEEP - 1))" -delete
   else
     find /backups -maxdepth 1 -name 'kusd-*.sql.gz.tmp' -delete
+    touch /backups/.last_failed  # the app watches these markers and alerts the staff
     echo "backup FAILED at $stamp" >&2
   fi
   sleep 86400 &

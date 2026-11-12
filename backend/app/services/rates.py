@@ -10,12 +10,15 @@ from typing import Literal
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.errors import ServiceError
+from app.domain.errors import Conflict, ServiceError
 from app.domain.rates import ParsedRate, is_jump, jump_pct
 from app.models import Rate
 from app.services import audit, notify
 from app.services import settings as settings_svc
 from app.services.settings import BizSettings
+
+# A manual rate further than this from the last market rate needs an explicit confirmation (typo guard).
+MANUAL_RATE_MAX_DEVIATION_PCT = Decimal("10")
 
 RATE_UNAVAILABLE_TEXT = "Покупка временно недоступна, попробуйте через несколько минут."
 
@@ -93,11 +96,18 @@ async def store(
     return StoreResult(row, pct)
 
 
-async def accept_jump(session: AsyncSession, *, staff_id: int, now: datetime, ip: str | None = None) -> Rate:
+async def accept_jump(
+    session: AsyncSession, *, rate_id: int, staff_id: int, now: datetime, ip: str | None = None
+) -> Rate:
+    """Accept the rejected rate the admin has actually seen: `rate_id` must still be the latest fetch."""
     biz = await settings_svc.load(session)
     row = await latest(session)
     if row is None or row.accepted or row.reject_reason != "jump":
         raise ServiceError("no_pending_jump", "Нет курса, ожидающего подтверждения.")
+    if row.id != rate_id:
+        raise Conflict(
+            "rate_changed", f"Курс с биржи уже обновился: теперь {row.value}. Проверьте и подтвердите заново."
+        )
     if (now - row.fetched_at).total_seconds() > biz.rate_max_age_seconds:
         raise ServiceError("jump_too_old", "Курс устарел, дождитесь следующего обновления.")
     previous = await latest_accepted(session)
@@ -117,9 +127,34 @@ async def accept_jump(session: AsyncSession, *, staff_id: int, now: datetime, ip
     return row
 
 
+async def check_manual(session: AsyncSession, value: Decimal) -> None:
+    """Typo guard for the manual rate: it bypasses the jump guard and never expires, so compare it with the market."""
+    reference = await latest_accepted(session)
+    if reference is None:
+        raise Conflict(
+            "manual_rate_unverified",
+            f"Нет курса биржи для сверки. Проверьте значение {value} ₽ ещё раз и подтвердите.",
+        )
+    deviation = jump_pct(reference.value, value)
+    if deviation > MANUAL_RATE_MAX_DEVIATION_PCT:
+        raise Conflict(
+            "manual_rate_deviates",
+            f"Курс {value} ₽ отличается от последнего курса биржи ({reference.value} ₽) на {deviation:.1f} %. "
+            "Если это не опечатка — подтвердите.",
+        )
+
+
 async def set_manual(
-    session: AsyncSession, value: Decimal | None, *, staff_id: int, now: datetime, ip: str | None = None
+    session: AsyncSession,
+    value: Decimal | None,
+    *,
+    staff_id: int,
+    now: datetime,
+    ip: str | None = None,
+    confirm: bool = False,
 ) -> BizSettings:
+    if value is not None and not confirm:
+        await check_manual(session, value)
     biz, changes = await settings_svc.update(
         session, {"manual_rate": None if value is None else str(value)}, staff_id=staff_id, now=now, ip=ip
     )

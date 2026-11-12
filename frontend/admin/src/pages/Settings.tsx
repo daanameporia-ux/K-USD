@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ApiError } from "@shared/api";
 import { useSearchParams } from "react-router-dom";
 import { formatDateTime, formatRate } from "@shared/format";
 import { confirmAction } from "@shared/telegram";
@@ -309,8 +310,26 @@ function RateBlock() {
   if (!r) return null;
 
   async function acceptJump() {
-    if (!(await confirmAction(`Подтвердить скачок курса и применить ${formatRate(r!.last_fetch?.value ?? null)}?`))) return;
-    await action.run(async () => setData(await api.post<RateView>(adminPath("/rate/accept-jump"))), "Курс применён.");
+    // Show the freshest rejected rate and send its id: the server refuses if a newer fetch has replaced it meanwhile.
+    let shown: RateView;
+    try {
+      shown = await api.get<RateView>(adminPath("/rate"));
+    } catch (e) {
+      action.setError(e instanceof ApiError ? e.message : "Не удалось получить курс.");
+      return;
+    }
+    setData(shown);
+    const pending = shown.last_fetch;
+    if (!shown.pending_jump || !pending) {
+      action.setError("Курса, ожидающего подтверждения, уже нет.");
+      return;
+    }
+    if (!(await confirmAction(`Подтвердить скачок курса и применить ${formatRate(pending.value)}?`))) return;
+    const ok = await action.run(
+      async () => setData(await api.post<RateView>(adminPath("/rate/accept-jump"), { rate_id: pending.id })),
+      "Курс применён.",
+    );
+    if (!ok) void reload();
   }
 
   async function setManualRate() {
@@ -320,10 +339,18 @@ function RateBlock() {
       return;
     }
     if (!(await confirmAction(`Установить ручной курс ${formatRate(value)}? Он заменит курс биржи.`))) return;
-    const ok = await action.run(
-      async () => setData(await api.post<RateView>(adminPath("/rate/manual"), { rate: value })),
-      "Ручной курс установлен.",
-    );
+    const ok = await action.run(async () => {
+      try {
+        setData(await api.post<RateView>(adminPath("/rate/manual"), { rate: value }));
+      } catch (e) {
+        // The server compares the value with the market rate and asks to confirm a suspicious one (typo guard).
+        const suspicious =
+          e instanceof ApiError && (e.code === "manual_rate_deviates" || e.code === "manual_rate_unverified");
+        if (!suspicious) throw e;
+        if (!(await confirmAction(e.message))) throw new ApiError(0, "cancelled", "Ручной курс не изменён.");
+        setData(await api.post<RateView>(adminPath("/rate/manual"), { rate: value, confirm: true }));
+      }
+    }, "Ручной курс установлен.");
     if (ok) setManual("");
   }
 

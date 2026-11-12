@@ -20,6 +20,13 @@ class LedgerEntry(Base):
             postgresql_where=text("type = 'deposit'"),
         ),
         Index("ix_ledger_user_created", "user_id", "created_at"),
+        Index(
+            "uq_ledger_user_idempotency",
+            "user_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -33,4 +40,5 @@ class LedgerEntry(Base):
     withdrawal_id: Mapped[int | None] = mapped_column(ForeignKey("withdrawals.id"))
     staff_id: Mapped[int | None] = mapped_column(ForeignKey("staff.id"))
     comment: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())

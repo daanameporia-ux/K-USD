@@ -33,6 +33,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://kusd:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/kusd
+      BACKUP_DIR: /backups  # the app alerts the staff when the daily backup fails or goes stale
+    volumes:
+      - backups:/backups:ro
     depends_on:
       postgres:
         condition: service_healthy

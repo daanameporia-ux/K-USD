@@ -48,6 +48,7 @@ async def test_registry_contains_all_jobs(container) -> None:
         "send_notifications",
         "expire_invites",
         "check_ledger_invariant",
+        "check_backups",
         "cleanup",
         "global_conversion_watch",
     }
@@ -118,3 +119,36 @@ async def test_static_frontend_serving(config, container, tmp_path, monkeypatch)
         assert (await client.get("/admin/main.js")).status_code == 200
         assert (await client.get("/admin/missing.js")).status_code == 404
         assert (await client.get("/", follow_redirects=False)).headers["location"] == "/app/"
+
+
+async def test_backup_watch_alerts_on_failed_and_stale_dumps(container, clock, tmp_path, monkeypatch) -> None:
+    import os
+
+    def mark(name: str, at) -> None:
+        path = tmp_path / name
+        path.touch()
+        os.utime(path, (at.timestamp(), at.timestamp()))
+
+    async def backup_alerts() -> list[str]:
+        return [m["text"] for m in await outbox(container, 0) if "Резервные копии" in m["text"]]
+
+    assert await maintenance.check_backups(container) is None  # BACKUP_DIR is not set: nothing to watch
+    monkeypatch.setattr(container.config, "backup_dir", str(tmp_path))
+    assert await maintenance.check_backups(container) is None  # fresh install: the first dump is still to come
+    clock.advance(hours=2)
+    assert "нет ни одной" in await maintenance.check_backups(container)
+    assert len(await backup_alerts()) == 1
+    assert await maintenance.check_backups(container) is not None
+    assert len(await backup_alerts()) == 1  # the alert is not repeated every hour
+
+    mark(".last_ok", clock.now())
+    assert await maintenance.check_backups(container) is None
+    clock.advance(hours=27)
+    assert "27 ч назад" in await maintenance.check_backups(container)
+    assert len(await backup_alerts()) == 2  # a new problem after a healthy period alerts at once
+
+    mark(".last_ok", clock.now())
+    assert await maintenance.check_backups(container) is None
+    mark(".last_failed", clock.now() + timedelta(minutes=1))
+    assert "ошибкой" in await maintenance.check_backups(container)
+    assert len(await backup_alerts()) == 3

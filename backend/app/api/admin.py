@@ -11,10 +11,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
 from app.api import serializers as ser
-from app.api.deps import MAX_ID, StaffAuth, admin_auth, client_ip, container, staff_auth
+from app.api.deps import MAX_ID, StaffAuth, admin_auth, client_ip, container, idempotency_key, staff_auth
 from app.container import Container
 from app.domain.enums import AuthMethod, Network, OrderStatus, StaffRole, UserStatus, WithdrawalStatus
-from app.domain.errors import Forbidden, NotFound, ServiceError
+from app.domain.errors import Conflict, Forbidden, NotFound, ServiceError
 from app.domain.text import escape_html
 from app.domain.timefmt import MSK
 from app.models import AddressBlacklist, AntifraudEvent, AuditLog, LedgerEntry, Order, Staff, User, Withdrawal
@@ -528,13 +528,22 @@ async def adjust_balance(
     request: Request,
     sa: StaffAuth = Depends(admin_auth),
     c: Container = Depends(container),
+    key: str = Depends(idempotency_key),
 ) -> dict[str, Any]:
     delta = _dec(body.amount, "amount")
     now = c.clock.now()
     async with c.db.begin() as session:
         u = await users_svc.lock(session, user_id)
+        # A retry after a lost response must not post the same adjustment twice.
+        done = await ledger.find_adjustment(session, u, key)
+        if done is not None:
+            if done.balance_delta != delta:
+                raise Conflict("idempotency_key_reused", "Этот запрос уже выполнен с другой суммой. Обновите страницу.")
+            return {"user": ser.user_admin(u), "entry": ser.ledger_entry(done)}
         before = {"balance": ser.money(u.balance)}
-        entry = await ledger.adjust(session, u, delta, staff_id=sa.staff.id, comment=body.comment, now=now)
+        entry = await ledger.adjust(
+            session, u, delta, staff_id=sa.staff.id, comment=body.comment, now=now, idempotency_key=key
+        )
         await audit.write(
             session,
             action="user.adjust_balance",
@@ -638,6 +647,9 @@ async def get_settings(sa: StaffAuth = Depends(admin_auth), c: Container = Depen
 async def patch_settings(
     body: SettingsPatch, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
+    if "manual_rate" in body.changes:
+        # The manual rate has its own endpoint with a market sanity check; do not let it be bypassed here.
+        raise ServiceError("unknown_setting", "Ручной курс задаётся в разделе «Курс».")
     now = c.clock.now()
     async with c.db.begin() as session:
         biz, changes = await settings_svc.update(
@@ -655,6 +667,11 @@ async def patch_settings(
 
 class ManualRateIn(BaseModel):
     rate: str = Field(max_length=40)
+    confirm: bool = False  # set after the admin confirmed a rate that is far from the market one
+
+
+class AcceptJumpIn(BaseModel):
+    rate_id: int = Field(ge=1, le=MAX_ID)  # the rejected fetch shown to the admin
 
 
 async def _rate_view(c: Container) -> dict[str, Any]:
@@ -671,6 +688,7 @@ async def _rate_view(c: Container) -> dict[str, Any]:
         "rate_field": biz.rate_field,
         "last_fetch": (
             {
+                "id": last.id,
                 "value": ser.rate_str(last.value),
                 "accepted": last.accepted,
                 "reject_reason": last.reject_reason,
@@ -701,7 +719,9 @@ async def set_manual_rate(
     if value <= 0:
         raise ServiceError("invalid_rate", "Курс должен быть больше нуля.")
     async with c.db.begin() as session:
-        await rates.set_manual(session, value, staff_id=sa.staff.id, now=c.clock.now(), ip=client_ip(request))
+        await rates.set_manual(
+            session, value, staff_id=sa.staff.id, now=c.clock.now(), ip=client_ip(request), confirm=body.confirm
+        )
     return await _rate_view(c)
 
 
@@ -716,10 +736,12 @@ async def clear_manual_rate(
 
 @router.post("/rate/accept-jump")
 async def accept_jump(
-    request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
+    body: AcceptJumpIn, request: Request, sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)
 ) -> dict[str, Any]:
     async with c.db.begin() as session:
-        await rates.accept_jump(session, staff_id=sa.staff.id, now=c.clock.now(), ip=client_ip(request))
+        await rates.accept_jump(
+            session, rate_id=body.rate_id, staff_id=sa.staff.id, now=c.clock.now(), ip=client_ip(request)
+        )
     return await _rate_view(c)
 
 

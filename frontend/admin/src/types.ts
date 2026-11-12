@@ -249,6 +249,7 @@ export interface RateView {
   manual_rate: string | null;
   rate_field: string;
   last_fetch: {
+    id: number;
     value: string | null;
     accepted: boolean;
     reject_reason: string | null;

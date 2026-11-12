@@ -43,6 +43,7 @@ class Container:
     ) -> None:
         self.config = config
         self.clock = clock or Clock()
+        self.started_at = self.clock.now()
         self._own_engine = engine is None
         self.engine = engine or make_engine(config.database_url)
         self.db = make_sessionmaker(self.engine)

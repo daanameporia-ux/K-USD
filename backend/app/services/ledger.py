@@ -36,6 +36,7 @@ async def post(
     withdrawal_id: int | None = None,
     staff_id: int | None = None,
     comment: str | None = None,
+    idempotency_key: str | None = None,
 ) -> LedgerEntry:
     new_balance = user.balance + balance_delta
     new_hold = user.hold + hold_delta
@@ -56,6 +57,7 @@ async def post(
         withdrawal_id=withdrawal_id,
         staff_id=staff_id,
         comment=comment,
+        idempotency_key=idempotency_key,
         created_at=now,
     )
     session.add(entry)
@@ -116,8 +118,25 @@ async def complete(
 ADJUST_COMMENT_MIN = 10
 
 
+async def find_adjustment(session: AsyncSession, user: User, idempotency_key: str) -> LedgerEntry | None:
+    """An adjustment already posted with this key (the caller holds the user lock)."""
+    result: LedgerEntry | None = (
+        await session.execute(
+            select(LedgerEntry).where(LedgerEntry.user_id == user.id, LedgerEntry.idempotency_key == idempotency_key)
+        )
+    ).scalar_one_or_none()
+    return result
+
+
 async def adjust(
-    session: AsyncSession, user: User, delta: Decimal, *, staff_id: int, comment: str, now: datetime
+    session: AsyncSession,
+    user: User,
+    delta: Decimal,
+    *,
+    staff_id: int,
+    comment: str,
+    now: datetime,
+    idempotency_key: str | None = None,
 ) -> LedgerEntry:
     if delta == ZERO:
         raise ServiceError("invalid_amount", "Сумма корректировки не может быть нулевой.")
@@ -134,6 +153,7 @@ async def adjust(
         now=now,
         staff_id=staff_id,
         comment=comment.strip(),
+        idempotency_key=idempotency_key,
     )
 
 

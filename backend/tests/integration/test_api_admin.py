@@ -11,7 +11,7 @@ from app.models import AuditLog, Order, Staff, User
 from app.services import staff as staff_svc
 from app.services.actor import Actor
 from tests.chain_fixtures import TRON_AMOUNT, TRON_TO, TRON_TX, mock_tron
-from tests.conftest import fund, login_client, login_staff, reload, seed_rate
+from tests.conftest import fund, login_client, login_staff, outbox, reload, seed_rate
 
 
 def idem() -> dict:
@@ -131,21 +131,36 @@ async def test_user_card_stats_ledger_and_adjust(api, container, clock) -> None:
     daily = (await api.get(f"/api/admin/users/{user_id}/stats/daily", headers=admin)).json()["items"]
     assert daily[0]["paid"] == 1 and daily[0]["conversion_pct"] == "100"
     neg = await api.post(
-        f"/api/admin/users/{user_id}/adjust-balance", headers=admin, json={"amount": "-11", "comment": "too much minus"}
+        f"/api/admin/users/{user_id}/adjust-balance",
+        headers={**admin, **idem()},
+        json={"amount": "-11", "comment": "too much minus"},
     )
     assert neg.status_code == 409
     short = await api.post(
-        f"/api/admin/users/{user_id}/adjust-balance", headers=admin, json={"amount": "1", "comment": "short"}
+        f"/api/admin/users/{user_id}/adjust-balance",
+        headers={**admin, **idem()},
+        json={"amount": "1", "comment": "short"},
     )
     assert short.status_code == 400
-    ok = (
-        await api.post(
-            f"/api/admin/users/{user_id}/adjust-balance",
-            headers=admin,
-            json={"amount": "-2.5", "comment": "manual correction"},
-        )
-    ).json()
+    no_key = await api.post(
+        f"/api/admin/users/{user_id}/adjust-balance", headers=admin, json={"amount": "1", "comment": "long enough"}
+    )
+    assert no_key.status_code == 400 and no_key.json()["error"]["code"] == "idempotency_key_required"
+    key = idem()
+    body = {"amount": "-2.5", "comment": "manual correction"}
+    ok = (await api.post(f"/api/admin/users/{user_id}/adjust-balance", headers={**admin, **key}, json=body)).json()
     assert ok["user"]["balance"] == "7.50" and ok["entry"]["type"] == "adjustment"
+    # the same request resent after a lost response is not posted twice
+    again = (await api.post(f"/api/admin/users/{user_id}/adjust-balance", headers={**admin, **key}, json=body)).json()
+    assert again["user"]["balance"] == "7.50" and again["entry"]["id"] == ok["entry"]["id"]
+    other = await api.post(
+        f"/api/admin/users/{user_id}/adjust-balance",
+        headers={**admin, **key},
+        json={"amount": "5", "comment": "manual correction"},
+    )
+    assert other.status_code == 409 and other.json()["error"]["code"] == "idempotency_key_reused"
+    alerts = [o for o in await outbox(container) if "Ручная корректировка" in o.get("text", "")]
+    assert len(alerts) == 1
     ledger = (await api.get(f"/api/admin/users/{user_id}/ledger", headers=admin)).json()["items"]
     assert [e["type"] for e in ledger] == ["adjustment", "deposit"]
     blocked = (
@@ -186,7 +201,15 @@ async def test_dashboard_settings_rate_blacklist(api, container, clock) -> None:
     assert manual["current"] == {"value": "99.10", "source": "manual", "age_seconds": None}
     cleared = (await api.delete("/api/admin/rate/manual", headers=admin)).json()
     assert cleared["current"]["source"] == "rapira"
-    assert (await api.post("/api/admin/rate/accept-jump", headers=admin)).status_code == 400
+    typo = await api.post("/api/admin/rate/manual", headers=admin, json={"rate": "9.91"})
+    assert typo.status_code == 409 and typo.json()["error"]["code"] == "manual_rate_deviates"
+    forced = (await api.post("/api/admin/rate/manual", headers=admin, json={"rate": "9.91", "confirm": True})).json()
+    assert forced["current"]["value"] == "9.91"
+    await api.delete("/api/admin/rate/manual", headers=admin)
+    via_settings = await api.patch("/api/admin/settings", headers=admin, json={"changes": {"manual_rate": "9.91"}})
+    assert via_settings.status_code == 400
+    assert (await api.post("/api/admin/rate/accept-jump", headers=admin, json={"rate_id": 1})).status_code == 400
+    assert (await api.post("/api/admin/rate/accept-jump", headers=admin)).status_code == 400  # rate_id is required
 
     added = (
         await api.post(
@@ -303,6 +326,12 @@ async def test_add_by_username_of_known_user(container, clock) -> None:
         await staff_svc.sync_superadmins(s, [1000], clock.now())
         sup = (await s.execute(select(Staff).where(Staff.tg_id == 1000))).scalar_one()
     await make_user(container, tg_id=4242, tg_username="KnownUser")
+    # the nick stored in `users` may be stale, so it never grants access by itself: only an invitation is created
     result = await staff_svc.add(container, Actor(sup.id, sup.role, True), role="operator", username="@knownuser")
-    assert result.invited is False and result.staff.tg_id == 4242
+    assert result.invited is True and result.staff.tg_id is None
+    async with container.db() as s:
+        assert await staff_svc.active_by_tg(s, 4242) is None
+    # ...and it is bound to whoever really owns the nick when they press /start
+    bound = await staff_svc.bind_invite(container, 5555, "KnownUser")
+    assert bound is not None and bound.tg_id == 5555
     _ = timedelta
