@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
@@ -17,7 +18,17 @@ from app.domain.enums import AuthMethod, Network, OrderStatus, StaffRole, UserSt
 from app.domain.errors import Conflict, Forbidden, NotFound, ServiceError
 from app.domain.text import escape_html
 from app.domain.timefmt import MSK
-from app.models import AddressBlacklist, AntifraudEvent, AuditLog, LedgerEntry, Order, Staff, User, Withdrawal
+from app.models import (
+    AddressBlacklist,
+    AntifraudEvent,
+    AuditLog,
+    LedgerEntry,
+    Order,
+    OrderProof,
+    Staff,
+    User,
+    Withdrawal,
+)
 from app.services import antifraud, audit, auth, ledger, notify, orders, rates, stats, withdrawals
 from app.services import settings as settings_svc
 from app.services import staff as staff_svc
@@ -299,9 +310,36 @@ async def get_order(
         if o is None:
             raise NotFound("Заявка не найдена")
         user = await session.get(User, o.user_id)
+        proof = (
+            await session.execute(
+                select(OrderProof.content_type, OrderProof.filename, OrderProof.size, OrderProof.source).where(
+                    OrderProof.order_id == order_id
+                )
+            )
+        ).one_or_none()
     data = ser.order(o, admin=True)
+    data["proof"] = (
+        {"content_type": proof[0], "filename": proof[1], "size": proof[2], "source": proof[3]} if proof else None
+    )
     data["user"] = {"id": user.id, "tg_id": user.tg_id, "tg_username": user.tg_username} if user else None
     return data
+
+
+@router.get("/orders/{order_id}/proof")
+async def get_order_proof(
+    order_id: Id, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+) -> Response:
+    """The client's payment screenshot. The type was detected from the file content at upload time."""
+    async with c.db() as session:
+        proof = await orders.get_proof(session, order_id)
+    return Response(
+        proof.content,
+        media_type=proof.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{proof.filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.post("/orders/{order_id}/resolve-review")
@@ -345,6 +383,9 @@ class UserPatch(BaseModel):
     daily_turnover_limit_rub: int | None = Field(None, ge=1, le=1_000_000_000)
     clear_limits: bool = False
     af_enabled: bool | None = None
+    require_buyer_phone: bool | None = None
+    require_buyer_name: bool | None = None
+    require_payment_proof: bool | None = None
     is_suspicious: bool | None = None
     status: Literal["active", "blocked"] | None = None
     comment: str | None = Field(None, max_length=1000)
@@ -478,6 +519,10 @@ async def patch_user(
             u.af_enabled = body.af_enabled
         if body.is_suspicious is not None:
             u.is_suspicious = body.is_suspicious
+        for field in ("require_buyer_phone", "require_buyer_name", "require_payment_proof"):
+            value = getattr(body, field)
+            if value is not None:
+                setattr(u, field, value)
         if body.status is not None:
             if body.status == "blocked":
                 u.status = UserStatus.blocked

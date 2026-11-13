@@ -65,6 +65,10 @@ def order(o: Order, *, admin: bool = False) -> dict[str, Any]:
         "expires_at": ts(o.expires_at),
         "paid_at": ts(o.paid_at),
         "finished_at": ts(o.finished_at),
+        "buyer_phone": o.buyer_phone,
+        "buyer_name": o.buyer_name,
+        "proof_required": o.proof_required,
+        "proof_uploaded_at": ts(o.proof_uploaded_at),
     }
     if admin:
         data.update(
@@ -169,6 +173,9 @@ def user_admin(u: User) -> dict[str, Any]:
         "is_suspicious": u.is_suspicious,
         "af_enabled": u.af_enabled,
         "af_reset_at": ts(u.af_reset_at),
+        "require_buyer_phone": u.require_buyer_phone,
+        "require_buyer_name": u.require_buyer_name,
+        "require_payment_proof": u.require_payment_proof,
         "bot_blocked": u.bot_blocked,
         "created_at": ts(u.created_at),
         "registered_at": ts(u.registered_at),

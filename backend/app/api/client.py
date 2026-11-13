@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,7 @@ from app.api import serializers as ser
 from app.api.deps import MAX_ID, MONEY_LIMIT, ClientAuth, client_auth, container, idempotency_key, limit
 from app.container import Container
 from app.domain.amounts import AmountError, parse_rub, parse_usdt
+from app.domain.buyer import PROOF_MAX_BYTES
 from app.domain.enums import Network, OrderSource, OrderStatus
 from app.domain.errors import NotFound, ServiceError
 from app.domain.pricing import quote
@@ -31,7 +32,12 @@ class AmountIn(BaseModel):
     amount_rub: str | int = Field(union_mode="left_to_right")
 
 
-class OrderIn(AmountIn):
+class BuyerIn(BaseModel):
+    buyer_phone: str | None = Field(None, max_length=40)
+    buyer_name: str | None = Field(None, max_length=200)
+
+
+class OrderIn(AmountIn, BuyerIn):
     expected_usdt: str | None = None
 
 
@@ -68,6 +74,7 @@ async def _me(c: Container, user_id: Id) -> dict[str, Any]:
         info = await ledger.summary(session, user)
         available = await withdrawals.available_for_withdrawal(session, user, biz, now)
         active = await orders.active_order(session, user.id)
+        unproved = await orders.pending_proof(session, user)
         lim = orders.limits_for(user, biz)
     return {
         "id": user.id,
@@ -91,6 +98,12 @@ async def _me(c: Container, user_id: Id) -> dict[str, Any]:
         "withdrawals_enabled": biz.withdrawals_enabled,
         "support_contact": biz.support_contact,
         "active_order": ser.order(active) if active is not None else None,
+        "requirements": {
+            "buyer_phone": user.require_buyer_phone,
+            "buyer_name": user.require_buyer_name,
+            "payment_proof": user.require_payment_proof,
+        },
+        "proof_pending_order": ser.order(unproved) if unproved is not None else None,
     }
 
 
@@ -161,13 +174,31 @@ async def order_create(
         except InvalidOperation:
             raise ServiceError("invalid_amount", "Некорректная сумма") from None
     result = await orders.create(
-        c, a.user.id, amount, source=OrderSource.webapp, idempotency_key=f"web:{key}", expected_usdt=expected
+        c,
+        a.user.id,
+        amount,
+        source=OrderSource.webapp,
+        idempotency_key=f"web:{key}",
+        expected_usdt=expected,
+        buyer_phone=body.buyer_phone,
+        buyer_name=body.buyer_name,
     )
     data = ser.order(result.order)
     data["created"] = result.created
     if result.order.status == OrderStatus.failed:
         data["error"] = {"code": "provider_failed", "message": orders.MSG_PROVIDER_FAILED}
     return data
+
+
+@router.post("/orders/buyer-check")
+async def order_buyer_check(
+    body: BuyerIn, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
+) -> dict[str, Any]:
+    """Validate the buyer details before the confirmation step; returns them normalized."""
+    async with c.db() as session:
+        user = await users.get(session, a.user.id)
+    buyer = orders.buyer_for(user, body.buyer_phone, body.buyer_name)
+    return {"buyer_phone": buyer.phone, "buyer_name": buyer.name}
 
 
 @router.get("/orders/active")
@@ -192,6 +223,22 @@ async def order_qr(order_id: Id, a: ClientAuth = Depends(client_auth), c: Contai
     if not o.qr_url:
         raise NotFound("QR-код недоступен")
     return Response(qr_png(o.qr_url), media_type="image/png", headers={"Cache-Control": "private, max-age=600"})
+
+
+@router.post("/orders/{order_id}/proof")
+async def order_proof(
+    order_id: Id, request: Request, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
+) -> dict[str, Any]:
+    """Payment screenshot: the raw file is the request body (image or PDF, up to 10 MB)."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > PROOF_MAX_BYTES:
+            raise ServiceError("proof_too_large", "Файл слишком большой. Максимум 10 МБ.", status=413)
+        chunks.append(chunk)
+    order = await orders.attach_proof(c, a.user.id, order_id, b"".join(chunks), source=OrderSource.webapp)
+    return ser.order(order)
 
 
 @router.post("/orders/{order_id}/cancel")

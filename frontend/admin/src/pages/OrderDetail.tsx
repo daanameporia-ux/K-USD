@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { formatDateTime, formatRate, formatRub, formatUsdt } from "@shared/format";
+import { formatDateTime, formatRate, formatRuPhone, formatRub, formatUsdt } from "@shared/format";
 import { confirmAction } from "@shared/telegram";
-import { AsyncButton, CopyButton, ErrorView, Loader, Notice, Row, StatusBadge, useLoad } from "@shared/ui";
+import { AsyncButton, CopyButton, ErrorView, Loader, Notice, Row, StatusBadge, errorMessage, useLoad } from "@shared/ui";
 import { adminPath, api } from "../api";
 import { useMe } from "../auth";
 import { ExternalLink, PageHeader, Section, useAction } from "../components";
@@ -13,6 +13,51 @@ interface SimulateResult {
   callback_status: string;
   result: unknown;
   order: Order;
+}
+
+/** The client's payment screenshot: loaded on demand with the staff token, shown inline when it is an image. */
+function ProofView({ order }: { order: Order }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const proof = order.proof;
+  useEffect(() => {
+    setUrl(null);
+    setError(null);
+  }, [order.id, order.proof_uploaded_at]);
+  useEffect(() => () => void (url && URL.revokeObjectURL(url)), [url]);
+  if (!proof) return null;
+  const inline = ["image/jpeg", "image/png", "image/webp"].includes(proof.content_type);
+  return (
+    <div className="stack">
+      {error && <div className="field-error">{error}</div>}
+      {url ? (
+        <>
+          {inline && (
+            <a href={url} target="_blank" rel="noreferrer">
+              <img className="proof-img" src={url} alt="Скриншот оплаты" />
+            </a>
+          )}
+          <a className="btn btn-secondary" href={url} download={proof.filename}>
+            Скачать файл ({proof.filename})
+          </a>
+        </>
+      ) : (
+        <AsyncButton
+          variant="secondary"
+          onClick={async () => {
+            setError(null);
+            try {
+              setUrl(await api.blobUrl(adminPath(`/orders/${order.id}/proof`)));
+            } catch (e) {
+              setError(errorMessage(e));
+            }
+          }}
+        >
+          Показать скриншот
+        </AsyncButton>
+      )}
+    </div>
+  );
 }
 
 export function OrderDetailPage() {
@@ -30,7 +75,7 @@ export function OrderDetailPage() {
   if (!o) return null;
 
   const user = o.user;
-  const keep = (next: Order) => setData({ ...next, user: next.user ?? user });
+  const keep = (next: Order) => setData({ ...next, user: next.user ?? user, proof: next.proof ?? o.proof });
 
   async function resolve(decision: "credit_order_rate" | "credit_current_rate" | "reject") {
     const c = comment.trim();
@@ -126,6 +171,37 @@ export function OrderDetailPage() {
           {o.payer_info != null && <Row label="Плательщик">{compactJson(o.payer_info)}</Row>}
         </Section>
       </div>
+
+      <Section title="Покупатель">
+        <Row label="Телефон (СБП)">
+          {o.buyer_phone ? (
+            <>
+              {formatRuPhone(o.buyer_phone)} <CopyButton value={o.buyer_phone} />
+            </>
+          ) : (
+            "не запрашивался"
+          )}
+        </Row>
+        <Row label="ФИО">
+          {o.buyer_name ? (
+            <>
+              {o.buyer_name} <CopyButton value={o.buyer_name} />
+            </>
+          ) : (
+            "не запрашивалось"
+          )}
+        </Row>
+        <Row label="Скриншот оплаты">
+          {!o.proof_required
+            ? "не требуется"
+            : o.proof_uploaded_at
+              ? `загружен ${formatDateTime(o.proof_uploaded_at)}${o.proof ? ` · ${Math.max(1, Math.round(o.proof.size / 1024))} КБ · ${o.proof.source === "bot" ? "через бота" : "через Mini App"}` : ""}`
+              : o.status === "paid"
+                ? "ожидается от клиента"
+                : "будет запрошен после оплаты"}
+        </Row>
+        <ProofView order={o} />
+      </Section>
 
       {o.status === "review" && (
         <Section title="Решение по разбору">

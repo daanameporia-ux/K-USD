@@ -27,6 +27,18 @@ class Chat(TgModel):
     title: str | None = None
 
 
+class PhotoSize(TgModel):
+    file_id: str
+    file_size: int | None = None
+
+
+class Document(TgModel):
+    file_id: str
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+
+
 class Message(TgModel):
     message_id: int
     date: int = 0
@@ -34,6 +46,8 @@ class Message(TgModel):
     from_user: TgUser | None = Field(None, alias="from")
     text: str | None = None
     caption: str | None = None
+    photo: list[PhotoSize] | None = None
+    document: Document | None = None
     reply_markup: dict[str, Any] | None = None
 
 

@@ -12,7 +12,7 @@ from app.models.misc import (
     Setting,
     TgUpdate,
 )
-from app.models.order import Order
+from app.models.order import Order, OrderProof
 from app.models.staff import AuthSession, LoginAttempt, Staff
 from app.models.user import User
 from app.models.withdrawal import Withdrawal
@@ -29,6 +29,7 @@ __all__ = [
     "MockPayment",
     "NotificationOutbox",
     "Order",
+    "OrderProof",
     "PaymentCallback",
     "Rate",
     "Setting",

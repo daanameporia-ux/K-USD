@@ -94,6 +94,7 @@ class Router:
         self._callbacks: list[tuple[str, Handler]] = []
         self._states: dict[str, Handler] = {}
         self._chat_member: Handler | None = None
+        self._media: Handler | None = None
         self._fallback: Handler | None = None
 
     def command(self, *names: str, resets_state: bool = True) -> Callable[[Handler], Handler]:
@@ -135,6 +136,15 @@ class Router:
 
         return deco
 
+    def media(self) -> Callable[[Handler], Handler]:
+        """Handler of messages with a photo or a document (no dialog state involved)."""
+
+        def deco(fn: Handler) -> Handler:
+            self._media = fn
+            return fn
+
+        return deco
+
     def fallback(self) -> Callable[[Handler], Handler]:
         def deco(fn: Handler) -> Handler:
             self._fallback = fn
@@ -149,6 +159,7 @@ class Router:
             self.callback(prefix)(fn)
         self._states.update(other._states)
         self._chat_member = other._chat_member or self._chat_member
+        self._media = other._media or self._media
         self._fallback = other._fallback or self._fallback
 
     def resolve(self, ctx: Ctx) -> tuple[Handler | None, bool]:
@@ -164,6 +175,8 @@ class Router:
             return self._fallback, False
         if update.message is None:
             return None, False
+        if (update.message.photo or update.message.document) and self._media is not None:
+            return self._media, False
         text = ctx.text
         if text.startswith("/"):
             head, _, rest = text.partition(" ")

@@ -7,6 +7,9 @@ import {
   MSG_RUB_INTEGER,
   rangeMessage,
   sanitizeRubInput,
+  formatRuPhone,
+  normalizeFullName,
+  normalizeRuPhone,
   validateRub,
   validateUsdt,
 } from "./format";
@@ -65,5 +68,24 @@ describe("amount validation", () => {
     expect(compareDecimal("9.50", "9.5")).toBe(0);
     expect(compareDecimal("10.00", "9.99")).toBe(1);
     expect(compareDecimal("0.01", "0.1")).toBe(-1);
+  });
+});
+
+describe("buyer details", () => {
+  it("accepts Russian mobile numbers in any common notation", () => {
+    for (const ok of ["+79161234567", "89161234567", "79161234567", "9161234567", "+7 (916) 123-45-67"]) {
+      expect(normalizeRuPhone(ok)).toBe("+79161234567");
+    }
+    expect(formatRuPhone("+79161234567")).toBe("+7 916 123-45-67");
+  });
+  it("rejects landlines, foreign and malformed numbers", () => {
+    for (const bad of ["", "+74951234567", "+380501234567", "+7916123456", "+791612345678", "+7916123456a"]) {
+      expect(normalizeRuPhone(bad)).toBeNull();
+    }
+  });
+  it("checks the full name", () => {
+    expect(normalizeFullName("  Иванов   Иван Иванович ")).toBe("Иванов Иван Иванович");
+    expect(normalizeFullName("Римский-Корсаков Николай")).toBe("Римский-Корсаков Николай");
+    for (const bad of ["", "Иванов", "Иванов 2", "Иванов И."]) expect(normalizeFullName(bad)).toBeNull();
   });
 });

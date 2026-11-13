@@ -34,8 +34,18 @@ class PaymentProvider(Protocol):
     name: str
 
     async def create_qr(
-        self, *, order_public_id: str, amount_rub: int, ttl_seconds: int, description: str
-    ) -> QrPayment: ...
+        self,
+        *,
+        order_public_id: str,
+        amount_rub: int,
+        ttl_seconds: int,
+        description: str,
+        buyer_phone: str | None = None,
+        buyer_name: str | None = None,
+    ) -> QrPayment:
+        """`buyer_phone` (+79XXXXXXXXX, linked to SBP) and `buyer_name` (full name) are what the client entered
+        for this order; None when the requirement is switched off for the client."""
+        ...
 
     async def get_status(self, provider_payment_id: str) -> CallbackEvent | None: ...
 

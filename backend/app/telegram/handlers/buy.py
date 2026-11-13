@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from app.domain.amounts import AmountError, format_rate, format_rub, format_usdt, parse_rub
+from app.domain.buyer import PROOF_MAX_BYTES
 from app.domain.enums import OrderSource, OrderStatus
 from app.domain.errors import ServiceError
 from app.domain.pricing import Quote
@@ -18,16 +20,45 @@ from app.telegram.router import Ctx, Router
 router = Router()
 
 STATE_AMOUNT = "buy:amount"
+STATE_PHONE = "buy:phone"
+STATE_NAME = "buy:name"
+STATE_CONFIRM = "buy:confirm"  # keeps the buyer details until the confirm button is pressed
 
 
-def preview_text(q: Quote) -> str:
-    return texts.BUY_PREVIEW.format(
+def preview_text(q: Quote, buyer: dict[str, Any] | None = None) -> str:
+    text = texts.BUY_PREVIEW.format(
         amount=format_rub(q.amount_rub),
         rate=format_rate(q.rate),
         markup=f"{q.markup_pct.normalize():f}",
         margin=format_rub(q.margin_rub),
         usdt=format_usdt(q.usdt_amount),
     )
+    if buyer and buyer.get("phone"):
+        text += texts.BUY_PREVIEW_PHONE.format(phone=buyer["phone"])
+    if buyer and buyer.get("name"):
+        text += texts.BUY_PREVIEW_NAME.format(name=buyer["name"])
+    return text
+
+
+async def _next_step(ctx: Ctx, data: dict[str, Any]) -> None:
+    """Ask for whatever this client still has to provide, then show the preview."""
+    assert ctx.user is not None
+    cancel = keyboards.inline([(texts.BUY_CANCEL, "nav:cancel")])
+    if ctx.user.require_buyer_phone and not data.get("phone"):
+        await ctx.fsm.set(STATE_PHONE, data)
+        await ctx.reply(texts.BUY_ASK_PHONE, cancel)
+        return
+    if ctx.user.require_buyer_name and not data.get("name"):
+        await ctx.fsm.set(STATE_NAME, data)
+        await ctx.reply(texts.BUY_ASK_NAME, cancel)
+        return
+    try:
+        q = await orders.preview(ctx.container, ctx.user.id, int(data["amount"]))
+    except ServiceError:
+        await ctx.fsm.clear()
+        raise
+    await ctx.fsm.set(STATE_CONFIRM, data)
+    await ctx.reply(preview_text(q, data), preview_markup(q))
 
 
 def preview_markup(q: Quote) -> dict[str, object]:
@@ -68,6 +99,9 @@ async def cmd_buy(ctx: Ctx) -> None:
         else:
             await ctx.reply(exc.message)
         return
+    except orders.ProofRequired as exc:
+        await ctx.reply(texts.PROOF_ASK.format(public_id=exc.order.public_id, hint=messages.PROOF_HINT))
+        return
     await ctx.fsm.set(STATE_AMOUNT)
     await ctx.reply(
         texts.BUY_ASK_AMOUNT.format(min=format_rub(info.limits.min_rub), max=format_rub(info.limits.max_rub)),
@@ -89,9 +123,24 @@ async def on_amount(ctx: Ctx) -> None:
     except ServiceError:
         await ctx.fsm.clear()
         raise
-    q = await orders.preview(ctx.container, ctx.user.id, amount)
-    await ctx.fsm.clear()
-    await ctx.reply(preview_text(q), preview_markup(q))
+    await orders.preview(ctx.container, ctx.user.id, amount)  # amount-dependent checks before asking more
+    await _next_step(ctx, {"amount": amount})
+
+
+@router.state(STATE_PHONE)
+@active_only
+@service_errors
+async def on_phone(ctx: Ctx) -> None:
+    phone = orders.buyer_phone(ctx.text)  # on error the state is kept, the user can try again
+    await _next_step(ctx, {**ctx.fsm.data, "phone": phone})
+
+
+@router.state(STATE_NAME)
+@active_only
+@service_errors
+async def on_name(ctx: Ctx) -> None:
+    name = orders.buyer_name(ctx.text)
+    await _next_step(ctx, {**ctx.fsm.data, "name": name})
 
 
 @router.callback("buy:confirm:")
@@ -106,6 +155,13 @@ async def cb_confirm(ctx: Ctx) -> None:
         await ctx.answer("Кнопка устарела")
         return
     message_id = ctx.callback.message.message_id
+    buyer = ctx.fsm.data if ctx.state == STATE_CONFIRM and ctx.fsm.data.get("amount") == amount else {}
+    if (ctx.user.require_buyer_phone and not buyer.get("phone")) or (
+        ctx.user.require_buyer_name and not buyer.get("name")
+    ):
+        await ctx.answer("Кнопка устарела")
+        await ctx.reply(texts.BUY_STALE)
+        return
     await ctx.answer("Создаём заявку…")  # answer before the (possibly slow) provider call
     try:
         result = await orders.create(
@@ -116,10 +172,13 @@ async def cb_confirm(ctx: Ctx) -> None:
             idempotency_key=f"tg:{ctx.chat_id}:{message_id}",
             expected_usdt=expected,
             tg_chat_id=ctx.chat_id,
+            buyer_phone=buyer.get("phone"),
+            buyer_name=buyer.get("name"),
         )
     except orders.PriceChanged as exc:
-        await ctx.edit(texts.BUY_PRICE_CHANGED + preview_text(exc.quote), preview_markup(exc.quote))
+        await ctx.edit(texts.BUY_PRICE_CHANGED + preview_text(exc.quote, buyer), preview_markup(exc.quote))
         return
+    await ctx.fsm.clear()
     if not result.created:
         await ctx.reply(texts.BUY_ALREADY_CREATED)
         return
@@ -144,3 +203,29 @@ async def cb_cancel_order(ctx: Ctx) -> None:
     order = await orders.cancel(ctx.container, ctx.user.id, order_id)
     await ctx.answer("Заявка отменена")
     await ctx.reply(messages.order_cancelled(order.public_id))
+
+
+@router.media()
+@active_only
+@service_errors
+async def on_media(ctx: Ctx) -> None:
+    """A photo or a file sent to the chat is the payment screenshot of the paid order that waits for one."""
+    assert ctx.user is not None and ctx.message is not None
+    async with ctx.container.db() as session:
+        order = await orders.pending_proof(session, ctx.user)
+    if order is None:
+        await ctx.reply(texts.PROOF_NOT_EXPECTED)
+        return
+    msg = ctx.message
+    if msg.photo:
+        best = msg.photo[-1]  # sizes go from the smallest to the largest
+        file_id, size = best.file_id, best.file_size
+    else:
+        assert msg.document is not None
+        file_id, size = msg.document.file_id, msg.document.file_size
+    data = None if (size or 0) > PROOF_MAX_BYTES else await ctx.tg.download_file(file_id, PROOF_MAX_BYTES)
+    if data is None:
+        await ctx.reply(texts.PROOF_TOO_LARGE)
+        return
+    saved = await orders.attach_proof(ctx.container, ctx.user.id, order.id, data, source=OrderSource.bot)
+    await ctx.reply(messages.proof_saved(saved.public_id))

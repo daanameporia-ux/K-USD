@@ -28,9 +28,17 @@ class MockProvider:
         self._db = db
         self._clock = clock
         self.fail_next_create: Exception | None = None  # test hook: simulate provider outage
+        self.last_create: dict[str, Any] | None = None
 
     async def create_qr(
-        self, *, order_public_id: str, amount_rub: int, ttl_seconds: int, description: str
+        self,
+        *,
+        order_public_id: str,
+        amount_rub: int,
+        ttl_seconds: int,
+        description: str,
+        buyer_phone: str | None = None,
+        buyer_name: str | None = None,
     ) -> QrPayment:
         if self.fail_next_create is not None:
             exc, self.fail_next_create = self.fail_next_create, None
@@ -49,7 +57,14 @@ class MockProvider:
                     created_at=self._clock.now(),
                 )
             )
-        raw = {"payment_id": payment_id, "description": description, "ttl_seconds": ttl_seconds}
+        raw = {
+            "payment_id": payment_id,
+            "description": description,
+            "ttl_seconds": ttl_seconds,
+            "buyer_phone": buyer_phone,
+            "buyer_name": buyer_name,
+        }
+        self.last_create = raw  # test hook: what the provider was given
         return QrPayment(provider_payment_id=payment_id, qr_url=url, expires_at=expires_at, raw=raw)
 
     async def get_status(self, provider_payment_id: str) -> CallbackEvent | None:

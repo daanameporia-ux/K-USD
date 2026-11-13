@@ -17,12 +17,14 @@ const ORDER = {
   rate: "100.00", markup_pct: "5", usdt_amount: "9.50", credited_usdt: null,
   qr_url: "https://qr.nspk.ru/MOCK1?type=02&bank=100000000000&sum=100000&cur=RUB&crc=0000",
   created_at: iso(now), expires_at: iso(now + 15 * 60_000), paid_at: null, finished_at: null,
+  buyer_phone: "+79161234567", buyer_name: "Иванов Иван Иванович", proof_required: true, proof_uploaded_at: null,
 };
 const ME = {
   id: 1, status: "active", registered: true, blocked: false, balance: "0.00", hold: "0.00",
   available_for_withdrawal: "0.00", total_bought: "0.00", total_withdrawn: "0.00", markup_pct: "5",
   limits: { min_rub: "1000", max_rub: "100000" }, can_create_orders: true, orders_blocked_message: null,
   purchases_enabled: true, withdrawals_enabled: true, support_contact: "@support", active_order: null,
+  requirements: { buyer_phone: true, buyer_name: true, payment_proof: true }, proof_pending_order: null,
 };
 // 1x1 PNG
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=", "base64");
@@ -51,6 +53,9 @@ async function clientSmoke(browser, base) {
   const page = await browser.newPage({ viewport: { width: 320, height: 640 } });
   await fakeTelegram(page);
   const created = [];
+  const bodies = [];
+  const uploads = [];
+  let order = ORDER;
   await page.route("**/api/**", async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -64,10 +69,17 @@ async function clientSmoke(browser, base) {
     }
     if (path === "/api/client/orders" && req.method() === "POST") {
       created.push(req.headers()["idempotency-key"]);
+      bodies.push(JSON.parse(req.postData()));
       return json(route, { ...ORDER, created: true });
     }
+    if (path === "/api/client/orders/buyer-check") return json(route, JSON.parse(req.postData()));
+    if (path === "/api/client/orders/1/proof" && req.method() === "POST") {
+      uploads.push({ type: req.headers()["content-type"], size: req.postDataBuffer()?.length ?? 0 });
+      order = { ...order, proof_uploaded_at: iso(Date.now()) };
+      return json(route, order);
+    }
     if (path === "/api/client/orders/1/qr.png") return route.fulfill({ status: 200, contentType: "image/png", body: PNG });
-    if (path === "/api/client/orders/1") return json(route, ORDER);
+    if (path === "/api/client/orders/1") return json(route, order);
     return json(route, { error: { code: "not_found", message: "Не найдено" } }, 404);
   });
   await page.goto(base + "/app/");
@@ -76,7 +88,20 @@ async function clientSmoke(browser, base) {
   await page.getByLabel("Сумма в рублях").fill("1000");
   await page.getByTestId("quote").filter({ hasText: "9.50" }).waitFor();
   await page.getByRole("button", { name: "Продолжить" }).click();
+  // Buyer details: the step cannot be passed without a valid Russian phone number and a full name.
+  await page.getByText("привязан к СБП").waitFor();
+  await page.getByRole("button", { name: "Продолжить" }).click();
+  await page.getByText("Введите российский номер").waitFor();
+  await page.getByText("Укажите ФИО полностью").waitFor();
+  await page.getByTestId("buyer-phone").fill("+7 495 123-45-67");
+  await page.getByTestId("buyer-name").fill("Иванов Иван Иванович");
+  await page.getByRole("button", { name: "Продолжить" }).click();
+  await page.getByText("Введите российский номер").waitFor();
+  if (await page.getByText("К зачислению").count()) throw new Error("a landline number must not pass the buyer step");
+  await page.getByTestId("buyer-phone").fill("8 (916) 123-45-67");
+  await page.getByRole("button", { name: "Продолжить" }).click();
   await page.getByText("К зачислению").waitFor();
+  await page.getByText("+7 916 123-45-67").waitFor();
   await page.getByRole("button", { name: "Подтвердить" }).click();
   await page.getByTestId("payment").waitFor();
   await page.getByAltText("QR-код для оплаты по СБП").waitFor();
@@ -95,10 +120,21 @@ async function clientSmoke(browser, base) {
   const opened = await page.evaluate(() => window.__opened);
   if (!opened?.startsWith("https://qr.nspk.ru/")) throw new Error("openLink was not called with the QR url");
   if (created.length !== 1 || !created[0]) throw new Error("order must be created once with an Idempotency-Key");
+  if (bodies[0].buyer_phone !== "+79161234567" || bodies[0].buyer_name !== "Иванов Иван Иванович")
+    throw new Error(`buyer details were not sent with the order: ${JSON.stringify(bodies[0])}`);
+  // The payment arrives: the screen asks for the screenshot and uploads the chosen file.
+  order = { ...ORDER, status: "paid", status_label: "Оплачена", credited_usdt: "9.50", paid_at: iso(Date.now()) };
+  await page.getByTestId("proof").waitFor({ timeout: 8000 });
+  await page.getByText("из истории операций").waitFor();
+  await page.getByRole("button", { name: "Загрузить скриншот" }).waitFor();
+  await page.getByTestId("proof-input").setInputFiles({ name: "history.png", mimeType: "image/png", buffer: PNG });
+  await page.getByText("Скриншот загружен").waitFor();
+  if (uploads.length !== 1 || uploads[0].size !== PNG.length || uploads[0].type !== "application/octet-stream")
+    throw new Error(`screenshot upload is wrong: ${JSON.stringify(uploads)}`);
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   if (width > 320) throw new Error(`horizontal scroll at 320px: ${width}`);
   await page.close();
-  console.log("client smoke: OK (purchase up to the QR screen)");
+  console.log("client smoke: OK (purchase with buyer details, QR, payment screenshot)");
 }
 
 const WITHDRAWAL = {

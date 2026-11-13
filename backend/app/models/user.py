@@ -42,6 +42,11 @@ class User(Base):
     is_suspicious: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     af_enabled: Mapped[bool] = mapped_column(nullable=False, default=True, server_default="true")
     af_reset_at: Mapped[datetime | None]
+    # Buyer details demanded with every order; on for everyone, switched off per client in the admin panel.
+    # Only a server default on purpose: the database decides the value for new clients.
+    require_buyer_phone: Mapped[bool] = mapped_column(nullable=False, server_default="true")
+    require_buyer_name: Mapped[bool] = mapped_column(nullable=False, server_default="true")
+    require_payment_proof: Mapped[bool] = mapped_column(nullable=False, server_default="true")
     bot_blocked: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     registered_at: Mapped[datetime | None]

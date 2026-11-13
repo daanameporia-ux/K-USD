@@ -16,13 +16,14 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain import buyer as buyer_rules
 from app.domain.amounts import rub_range_message
 from app.domain.enums import ACTIVE_ORDER_STATUSES, OrderSource, OrderStatus
 from app.domain.errors import Forbidden, NotFound, ServiceError
 from app.domain.pricing import Quote, quote
 from app.domain.statuses import order_transition
 from app.logging import get_logger
-from app.models import Order, PaymentCallback, User
+from app.models import Order, OrderProof, PaymentCallback, User
 from app.payments.base import CallbackEvent, PaymentProvider
 from app.services import antifraud, audit, ledger, messages, notify, rates
 from app.services import settings as settings_svc
@@ -48,6 +49,17 @@ class ActiveOrderExists(ServiceError):
         super().__init__(
             "active_order_exists",
             f"У вас уже есть активная заявка {order.public_id}. Оплатите или отмените её.",
+            status=409,
+            details={"order_id": order.id, "public_id": order.public_id},
+        )
+        self.order = order
+
+
+class ProofRequired(ServiceError):
+    def __init__(self, order: Order) -> None:
+        super().__init__(
+            "proof_required",
+            f"Сначала загрузите скриншот оплаты по заявке {order.public_id} — без него новую заявку создать нельзя.",
             status=409,
             details={"order_id": order.id, "public_id": order.public_id},
         )
@@ -84,6 +96,53 @@ async def active_order(session: AsyncSession, user_id: int) -> Order | None:
     return result
 
 
+async def pending_proof(session: AsyncSession, user: User) -> Order | None:
+    """The oldest paid order of the client that still waits for the payment screenshot."""
+    if not user.require_payment_proof:
+        return None
+    stmt = (
+        select(Order)
+        .where(
+            Order.user_id == user.id,
+            Order.status == OrderStatus.paid,
+            Order.proof_required.is_(True),
+            Order.proof_uploaded_at.is_(None),
+        )
+        .order_by(Order.id)
+        .limit(1)
+    )
+    result: Order | None = (await session.execute(stmt)).scalar_one_or_none()
+    return result
+
+
+@dataclass(frozen=True)
+class Buyer:
+    phone: str | None
+    name: str | None
+
+
+def buyer_phone(raw: str | None) -> str:
+    try:
+        return buyer_rules.normalize_phone(raw)
+    except buyer_rules.BuyerError as exc:
+        raise ServiceError(exc.code, exc.message) from None
+
+
+def buyer_name(raw: str | None) -> str:
+    try:
+        return buyer_rules.normalize_name(raw)
+    except buyer_rules.BuyerError as exc:
+        raise ServiceError(exc.code, exc.message) from None
+
+
+def buyer_for(user: User, phone: str | None, name: str | None) -> Buyer:
+    """Validate what this client must provide; whatever is switched off for them is not stored at all."""
+    return Buyer(
+        phone=buyer_phone(phone) if user.require_buyer_phone else None,
+        name=buyer_name(name) if user.require_buyer_name else None,
+    )
+
+
 async def get_for_user(session: AsyncSession, user_id: int, order_id: int) -> Order:
     order = await session.get(Order, order_id)
     if order is None or order.user_id != user_id:
@@ -112,6 +171,10 @@ async def check_can_create(
     if existing is not None:
         session.expunge(existing)  # keep it usable after the transaction is rolled back
         raise ActiveOrderExists(existing)
+    unproved = await pending_proof(session, user)
+    if unproved is not None:
+        session.expunge(unproved)
+        raise ProofRequired(unproved)
     await antifraud.check_order_creation(session, user, biz, amount_rub, now)
     return await rates.require(session, biz, now)
 
@@ -170,6 +233,8 @@ async def create(
     idempotency_key: str | None,
     expected_usdt: Decimal | None = None,
     tg_chat_id: int | None = None,
+    buyer_phone: str | None = None,
+    buyer_name: str | None = None,
 ) -> CreateResult:
     provider = c.payments.default
     now = c.clock.now()
@@ -188,6 +253,7 @@ async def create(
             biz = await settings_svc.load(session)
             check_amount(user, biz, amount_rub)
             rate = await check_can_create(session, user, biz, now, amount_rub)
+            buyer = buyer_for(user, buyer_phone, buyer_name)
             q = _positive(quote(amount_rub, user.markup_pct, rate.value))
             if expected_usdt is not None and q.usdt_amount != expected_usdt:
                 raise PriceChanged(q)
@@ -206,6 +272,9 @@ async def create(
                 source=source,
                 idempotency_key=idempotency_key,
                 tg_chat_id=tg_chat_id,
+                buyer_phone=buyer.phone,
+                buyer_name=buyer.name,
+                proof_required=user.require_payment_proof,
                 created_at=now,
                 expires_at=now + ttl,
             )
@@ -237,6 +306,8 @@ async def create(
                 amount_rub=amount_rub,
                 ttl_seconds=int(ttl.total_seconds()),
                 description=f"Покупка USDT, заявка {order.public_id}",
+                buyer_phone=buyer.phone,
+                buyer_name=buyer.name,
             ),
             timeout=PROVIDER_TIMEOUT,
         )
@@ -308,6 +379,55 @@ async def cancel(c: Container, user_id: int, order_id: int) -> Order:
         return order
 
 
+# --- payment screenshot ---------------------------------------------------------------
+
+PROOF_UPLOADS_PER_MINUTE = 6
+
+
+def _proof_filename(order: Order, content_type: str) -> str:
+    return f"{order.public_id}.{buyer_rules.PROOF_TYPES[content_type]}"
+
+
+async def attach_proof(c: Container, user_id: int, order_id: int, data: bytes, *, source: OrderSource) -> Order:
+    """Store the client's screenshot of the payment. Allowed only for their own paid order; a new file replaces it."""
+    try:
+        content_type = buyer_rules.sniff_proof(data)
+    except buyer_rules.BuyerError as exc:
+        raise ServiceError(exc.code, exc.message) from None
+    now = c.clock.now()
+    if not c.limiter.hit(f"proof:{user_id}", PROOF_UPLOADS_PER_MINUTE, 60.0, now.timestamp()):
+        raise ServiceError("rate_limited", "Слишком много загрузок, повторите через минуту.", status=429)
+    async with c.db.begin() as session:
+        order = await _lock_order(session, order_id)
+        if order.user_id != user_id:
+            raise NotFound("Заявка не найдена")
+        if order.status != OrderStatus.paid:
+            raise ServiceError(
+                "proof_not_expected", "Скриншот можно загрузить только после успешной оплаты.", status=409
+            )
+        if not order.proof_required:
+            raise ServiceError("proof_not_expected", "Для этой заявки скриншот не требуется.", status=409)
+        values = {
+            "content": data,
+            "content_type": content_type,
+            "filename": _proof_filename(order, content_type),
+            "size": len(data),
+            "source": source.value,
+            "uploaded_at": now,
+        }
+        stmt = insert(OrderProof).values(order_id=order.id, **values)
+        await session.execute(stmt.on_conflict_do_update(index_elements=[OrderProof.order_id], set_=values))
+        order.proof_uploaded_at = now
+        return order
+
+
+async def get_proof(session: AsyncSession, order_id: int) -> OrderProof:
+    proof = await session.get(OrderProof, order_id)
+    if proof is None:
+        raise NotFound("Скриншот не загружен")
+    return proof
+
+
 # --- payments ------------------------------------------------------------------------
 
 
@@ -317,7 +437,10 @@ async def _credit(session: AsyncSession, order: Order, user: User, amount: Decim
     order.credited_usdt = amount
     order.paid_at = order.paid_at or now
     order.finished_at = now
-    await notify.message(session, user.tg_id, messages.order_paid(order.public_id, amount, user.balance), now=now)
+    needs_proof = order.proof_required and user.require_payment_proof
+    await notify.message(
+        session, user.tg_id, messages.order_paid(order.public_id, amount, user.balance, needs_proof), now=now
+    )
     await _close_qr_message(session, order, f"✅ Оплачено, зачислено {amount} USDT.", now)
     await _finished(session, user, now)
 

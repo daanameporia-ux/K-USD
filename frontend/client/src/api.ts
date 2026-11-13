@@ -16,6 +16,10 @@ export interface Order {
   expires_at: string;
   paid_at: string | null;
   finished_at: string | null;
+  buyer_phone: string | null;
+  buyer_name: string | null;
+  proof_required: boolean;
+  proof_uploaded_at: string | null;
   created?: boolean;
   error?: { code: string; message: string };
 }
@@ -38,6 +42,10 @@ export interface Me {
   withdrawals_enabled: boolean;
   support_contact: string;
   active_order: Order | null;
+  /** What this client must provide with every order (switched off per client in the admin panel). */
+  requirements: { buyer_phone: boolean; buyer_name: boolean; payment_proof: boolean };
+  /** A paid order that still waits for the payment screenshot: no new orders until it is uploaded. */
+  proof_pending_order: Order | null;
 }
 
 export interface Rate {

@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ApiError, Attempt } from "@shared/api";
-import { formatRate, formatRub, formatUsdt, sanitizeRubInput, validateRub } from "@shared/format";
+import {
+  MSG_BUYER_NAME,
+  MSG_BUYER_PHONE,
+  formatRate,
+  formatRub,
+  formatRuPhone,
+  formatUsdt,
+  normalizeFullName,
+  normalizeRuPhone,
+  sanitizeRubInput,
+  validateRub,
+} from "@shared/format";
 import { haptic } from "@shared/telegram";
 import { AsyncButton, ErrorView, Loader, Notice, Row, errorMessage, useLoad } from "@shared/ui";
 import { api, type Me, type Order, type Quote } from "../api";
@@ -15,7 +26,11 @@ export function Buy() {
   const [text, setText] = useState("");
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [step, setStep] = useState<"amount" | "buyer" | "confirm">("amount");
+  const [phone, setPhone] = useState("");
+  const [name, setName] = useState("");
+  const [buyerTried, setBuyerTried] = useState(false);
+  const [buyerError, setBuyerError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const attempt = useRef(new Attempt());
 
@@ -64,10 +79,56 @@ export function Buy() {
     );
   }
 
+  const req = me.data.requirements;
+  const needBuyer = req.buyer_phone || req.buyer_name;
+  const cleanPhone = req.buyer_phone ? normalizeRuPhone(phone) : null;
+  const cleanName = req.buyer_name ? normalizeFullName(name) : null;
+  const phoneBad = req.buyer_phone && !cleanPhone;
+  const nameBad = req.buyer_name && !cleanName;
+
+  if (me.data.proof_pending_order) {
+    const waiting = me.data.proof_pending_order;
+    return (
+      <div className="screen">
+        <TopBar title="Покупка" />
+        <Notice tone="warn">
+          Сначала загрузите скриншот оплаты по заявке {waiting.public_id}. Без него новую заявку создать нельзя.
+        </Notice>
+        <Footer>
+          <button className="btn btn-primary btn-block" onClick={() => nav(`/order/${waiting.id}`)}>
+            Загрузить скриншот
+          </button>
+        </Footer>
+      </div>
+    );
+  }
+
+  /** The buyer step is passed only with valid details; the server checks them once more. */
+  async function checkBuyer() {
+    setBuyerTried(true);
+    setBuyerError(null);
+    if (phoneBad || nameBad) {
+      haptic("error");
+      return;
+    }
+    try {
+      await api.post("/api/client/orders/buyer-check", { buyer_phone: cleanPhone, buyer_name: cleanName });
+      setStep("confirm");
+    } catch (e) {
+      setBuyerError(errorMessage(e));
+      haptic("error");
+    }
+  }
+
   async function create() {
     if (!quote) return;
     setNotice(null);
-    const body = { amount_rub: quote.amount_rub, expected_usdt: quote.usdt_amount };
+    const body = {
+      amount_rub: quote.amount_rub,
+      expected_usdt: quote.usdt_amount,
+      buyer_phone: cleanPhone,
+      buyer_name: cleanName,
+    };
     try {
       // the key is reused only when resending exactly this request; a new amount / quote gets a new key
       const order = await api.post<Order>("/api/client/orders", body, attempt.current.keyFor(body));
@@ -91,7 +152,13 @@ export function Buy() {
         }
         return;
       }
-      if (e instanceof ApiError && e.code === "active_order_exists") {
+      if (e instanceof ApiError && (e.code === "invalid_buyer_phone" || e.code === "invalid_buyer_name")) {
+        setBuyerTried(true);
+        setBuyerError(e.message);
+        setStep("buyer");
+        return;
+      }
+      if (e instanceof ApiError && (e.code === "active_order_exists" || e.code === "proof_required")) {
         const id = (e.details as { order_id?: number }).order_id;
         if (id) nav(`/order/${id}`, { replace: true });
         return;
@@ -101,7 +168,71 @@ export function Buy() {
     }
   }
 
-  if (confirming && quote) {
+  if (step === "buyer" && quote) {
+    return (
+      <div className="screen">
+        <TopBar title="Данные покупателя" back={null} />
+        <p className="lead-sub">
+          Укажите данные человека, который будет оплачивать по QR-коду. Без них заявку создать нельзя.
+        </p>
+        <div className="card stack">
+          {req.buyer_phone && (
+            <label className="field">
+              <span>Номер телефона покупателя</span>
+              <input
+                className={`input ${buyerTried && phoneBad ? "input-bad" : ""}`}
+                type="tel"
+                inputMode="tel"
+                autoComplete="off"
+                placeholder="+7 900 000-00-00"
+                maxLength={20}
+                value={phone}
+                data-testid="buyer-phone"
+                onChange={(e) => setPhone(e.target.value.replace(/[^\d+()\-\s]/g, ""))}
+              />
+              {buyerTried && phoneBad ? (
+                <div className="field-error">{MSG_BUYER_PHONE}</div>
+              ) : (
+                <div className="field-hint">
+                  Российский номер. Он должен быть привязан к СБП (Системе быстрых платежей) в банке покупателя.
+                </div>
+              )}
+            </label>
+          )}
+          {req.buyer_name && (
+            <label className="field">
+              <span>ФИО покупателя</span>
+              <input
+                className={`input ${buyerTried && nameBad ? "input-bad" : ""}`}
+                type="text"
+                autoComplete="off"
+                autoCapitalize="words"
+                placeholder="Иванов Иван Иванович"
+                maxLength={120}
+                value={name}
+                data-testid="buyer-name"
+                onChange={(e) => setName(e.target.value)}
+              />
+              {buyerTried && nameBad ? (
+                <div className="field-error">{MSG_BUYER_NAME}</div>
+              ) : (
+                <div className="field-hint">Полностью: фамилия, имя и отчество.</div>
+              )}
+            </label>
+          )}
+        </div>
+        {buyerError && <Notice tone="bad">{buyerError}</Notice>}
+        <Footer>
+          <AsyncButton onClick={checkBuyer}>Продолжить</AsyncButton>
+          <button className="btn btn-ghost" onClick={() => setStep("amount")}>
+            Назад
+          </button>
+        </Footer>
+      </div>
+    );
+  }
+
+  if (step === "confirm" && quote) {
     return (
       <div className="screen">
         <TopBar title="Подтверждение" back={null} />
@@ -121,6 +252,12 @@ export function Buy() {
             <span className="row-value">{formatUsdt(quote.usdt_amount)}</span>
           </div>
         </div>
+        {needBuyer && (
+          <div className="card">
+            {cleanPhone && <Row label="Телефон покупателя">{formatRuPhone(cleanPhone)}</Row>}
+            {cleanName && <Row label="ФИО покупателя">{cleanName}</Row>}
+          </div>
+        )}
         {notice && <Notice tone="warn">{notice}</Notice>}
         <Footer>
           <AsyncButton onClick={create}>Подтвердить</AsyncButton>
@@ -128,7 +265,7 @@ export function Buy() {
             className="btn btn-ghost"
             onClick={() => {
               setNotice(null);
-              setConfirming(false);
+              setStep(needBuyer ? "buyer" : "amount");
             }}
           >
             Изменить
@@ -188,7 +325,7 @@ export function Buy() {
         {quoteError && <div className="field-error">{quoteError}</div>}
       </div>
       <Footer>
-        <button className="btn btn-primary btn-block" disabled={!quoteReady} onClick={() => quoteReady && setConfirming(true)}>
+        <button className="btn btn-primary btn-block" disabled={!quoteReady} onClick={() => quoteReady && setStep(needBuyer ? "buyer" : "confirm")}>
           Продолжить
         </button>
       </Footer>

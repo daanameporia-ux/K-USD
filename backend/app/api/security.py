@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 
@@ -28,7 +29,9 @@ HEADERS = {
 }
 
 
-MAX_BODY = 64 * 1024  # bytes; the largest legitimate request is a few KB
+MAX_BODY = 64 * 1024  # bytes; the largest legitimate JSON request is a few KB
+UPLOAD_MAX_BODY = 10 * 1024 * 1024  # the payment screenshot (same as domain.buyer.PROOF_MAX_BYTES)
+_UPLOAD_PATH = re.compile(r"/api/client/orders/\d+/proof\Z")
 
 
 class BodyLimitMiddleware:
@@ -44,7 +47,10 @@ class BodyLimitMiddleware:
             return
         headers = dict(scope.get("headers") or [])
         declared = headers.get(b"content-length")
-        if declared is not None and (not declared.isdigit() or int(declared) > self.max_body):
+        max_body = self.max_body
+        if scope.get("method") == "POST" and _UPLOAD_PATH.match(scope.get("path") or ""):
+            max_body = max(max_body, UPLOAD_MAX_BODY)
+        if declared is not None and (not declared.isdigit() or int(declared) > max_body):
             await _too_large(send)
             return
         received = 0
@@ -54,7 +60,7 @@ class BodyLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_body:
+                if received > max_body:
                     raise _BodyTooLarge
             return message
 

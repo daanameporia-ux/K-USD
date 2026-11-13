@@ -21,6 +21,8 @@ export type Reauth = () => Promise<string | null>;
 
 export interface RequestOptions {
   body?: unknown;
+  /** Raw file sent as the request body instead of JSON. */
+  file?: Blob;
   idempotencyKey?: string;
   signal?: AbortSignal;
 }
@@ -62,14 +64,15 @@ export class ApiClient {
 
   private async send(method: string, path: string, o: RequestOptions): Promise<Response> {
     const headers: Record<string, string> = { Accept: "application/json" };
-    if (o.body !== undefined) headers["Content-Type"] = "application/json";
+    if (o.file) headers["Content-Type"] = "application/octet-stream";
+    else if (o.body !== undefined) headers["Content-Type"] = "application/json";
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     if (o.idempotencyKey) headers["Idempotency-Key"] = o.idempotencyKey;
     const f = this.opts.fetchImpl ?? fetch.bind(globalThis);
     return f((this.opts.base ?? "") + path, {
       method,
       headers,
-      body: o.body === undefined ? undefined : JSON.stringify(o.body),
+      body: o.file ?? (o.body === undefined ? undefined : JSON.stringify(o.body)),
       signal: o.signal,
     });
   }
@@ -132,6 +135,9 @@ export class ApiClient {
   }
   post<T>(path: string, body?: unknown, idempotencyKey?: string): Promise<T> {
     return this.request<T>("POST", path, { body: body ?? {}, idempotencyKey });
+  }
+  upload<T>(path: string, file: Blob): Promise<T> {
+    return this.request<T>("POST", path, { file });
   }
   patch<T>(path: string, body: unknown): Promise<T> {
     return this.request<T>("PATCH", path, { body });

@@ -56,6 +56,7 @@ class TelegramClient:
         backoff_base: float = 0.5,
     ) -> None:
         self._base = f"{base_url.rstrip('/')}/bot{token}/"
+        self._file_base = f"{base_url.rstrip('/')}/file/bot{token}/"
         self._http = httpx.AsyncClient(
             transport=transport, timeout=httpx.Timeout(DEFAULT_TIMEOUT, connect=CONNECT_TIMEOUT)
         )
@@ -197,6 +198,20 @@ class TelegramClient:
             files={"photo": ("qr.png", photo, "image/png")},
         )
         return result
+
+    async def download_file(self, file_id: str, max_bytes: int) -> bytes | None:
+        """Content of a file the user sent to the bot; None when it is larger than `max_bytes`."""
+        info = await self.call("getFile", {"file_id": file_id})
+        path = str((info or {}).get("file_path") or "")
+        if not path or int((info or {}).get("file_size") or 0) > max_bytes:
+            return None
+        try:
+            resp = await self._http.get(self._file_base + path)
+        except httpx.HTTPError as exc:
+            raise TelegramNetworkError("downloadFile", type(exc).__name__) from None
+        if resp.status_code != 200:
+            raise TelegramApiError(resp.status_code, "file download failed", None, "downloadFile")
+        return resp.content if len(resp.content) <= max_bytes else None
 
     async def answer_callback_query(self, callback_query_id: str, text: str | None = None, alert: bool = False) -> Any:
         return await self.call(

@@ -71,6 +71,21 @@ export function Home() {
         </button>
       </div>
 
+      {m.proof_pending_order && (
+        <div className="tile-card">
+          <button className="tile" onClick={() => nav(`/order/${m.proof_pending_order!.id}`)}>
+            <Bubble icon="paste" tone="warn" />
+            <span className="tile-body">
+              <span className="tile-title">Загрузите скриншот оплаты</span>
+              <div className="tile-sub">Заявка {m.proof_pending_order.public_id} · без него нельзя создать новую</div>
+            </span>
+            <span className="tile-chevron">
+              <Icon name="chevron" size={18} />
+            </span>
+          </button>
+        </div>
+      )}
+
       {m.active_order && (
         <div className="tile-card">
           <button className="tile" onClick={() => nav(`/order/${m.active_order!.id}`)}>

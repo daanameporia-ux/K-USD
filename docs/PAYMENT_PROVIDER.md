@@ -9,12 +9,14 @@
 | Метод | Что делает | Важно |
 |---|---|---|
 | `name: str` | короткое имя, например `"acme"` | совпадает с `PAYMENT_PROVIDER` и с путём callback |
-| `create_qr(order_public_id, amount_rub, ttl_seconds, description) -> QrPayment` | создаёт платёж у провайдера, возвращает `provider_payment_id`, ссылку `https://qr.nspk.ru/...`, срок действия | `ttl_seconds` = сроку жизни заявки: QR должен перестать действовать вместе с заявкой. Вызывается **вне** транзакции БД, таймаут 20 с; любое исключение → заявка `failed` |
+| `create_qr(order_public_id, amount_rub, ttl_seconds, description, buyer_phone=None, buyer_name=None) -> QrPayment` | создаёт платёж у провайдера, возвращает `provider_payment_id`, ссылку `https://qr.nspk.ru/...`, срок действия | `ttl_seconds` = сроку жизни заявки: QR должен перестать действовать вместе с заявкой. Вызывается **вне** транзакции БД, таймаут 20 с; любое исключение → заявка `failed` |
 | `get_status(provider_payment_id) -> CallbackEvent \| None` | запрос статуса платежа (сверка перед истечением заявки) | `None` = ещё не оплачен. Для оплаченного верните событие со стабильным `event_key`, например `"<id>:paid"` |
 | `verify_callback(headers, body) -> bool` | проверка подписи входящего callback по сырому телу | сравнивать через `hmac.compare_digest`; при `False` сервис ответит `401` |
 | `parse_callback(body) -> CallbackEvent` | разбор тела callback | при неверном формате бросайте `CallbackParseError` (ответ `400`). `event_key` — уникальный id события у провайдера: по нему отсекаются повторы |
 
 `CallbackEvent.status`: `"paid"`, `"failed"` или `"expired"`. `amount_rub` — сколько реально пришло (целые рубли); если оно не совпадёт с суммой заявки **или не передано вовсе** (`None`), заявка уйдёт на разбор без зачисления. `event_key` должен быть уникальным в пределах провайдера (в БД хранится как `<provider>:<event_key>`). `payer_info` — данные плательщика, если провайдер их отдаёт (нужны правилу антифрода B13).
+
+`buyer_phone` (`+79XXXXXXXXX`, номер покупателя, привязанный к СБП) и `buyer_name` (ФИО покупателя) — то, что клиент ввёл для этой заявки; передайте их провайдеру в данных ордера. `None` — если требование отключено для клиента в админке. Скриншот оплаты клиент загружает уже после оплаты, он хранится в `order_proofs` и доступен в карточке заявки (`GET /api/admin/orders/{id}/proof`).
 
 HTTP к провайдеру делайте через общий `httpx.AsyncClient` с таймаутами: `build_registry` получает его параметром `http` (это `container.http`).
 

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { formatCountdown, formatRub, formatUsdt } from "@shared/format";
+import { formatCountdown, formatRuPhone, formatRub, formatUsdt } from "@shared/format";
 import { confirmAction, haptic, openLink } from "@shared/telegram";
 import { AsyncButton, ErrorView, Loader, Notice, Row, StatusBadge, errorMessage, useLoad } from "@shared/ui";
 import { api, type Order } from "../api";
-import { Footer, Icon, Money, Result, TopBar, type IconName } from "./common";
+import { Bubble, Footer, Icon, Money, Result, TopBar, type IconName } from "./common";
+
+const PROOF_MAX_BYTES = 10 * 1024 * 1024;
 
 type Final = { tone: "ok" | "warn" | "bad" | "info"; icon: IconName; title: string; text: (o: Order) => string };
 const FINAL: Record<string, Final> = {
@@ -39,6 +41,9 @@ export function OrderScreen() {
   const acting = useRef(false);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [proofError, setProofError] = useState<string | null>(null);
   const status = order.data?.status;
   const active = status === "pending" || status === "creating";
   const pending = status === "pending";
@@ -108,6 +113,30 @@ export function OrderScreen() {
   const left = new Date(o.expires_at).getTime() - now;
   const final = FINAL[o.status];
   const qrUrl = qr && qr.id === id ? qr.url : null;
+
+  const needsProof = o.status === "paid" && o.proof_required;
+  const proofMissing = needsProof && !o.proof_uploaded_at;
+
+  async function uploadProof(file: File | undefined) {
+    if (!file || uploading) return;
+    setProofError(null);
+    if (file.size > PROOF_MAX_BYTES) {
+      setProofError("Файл слишком большой. Максимум 10 МБ.");
+      haptic("error");
+      return;
+    }
+    setUploading(true);
+    try {
+      order.setData(await api.upload<Order>(`/api/client/orders/${o.id}/proof`, file));
+      haptic("success");
+    } catch (e) {
+      setProofError(errorMessage(e));
+      haptic("error");
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = ""; // the same file can be picked again
+    }
+  }
 
   const cancel = (
     <AsyncButton
@@ -191,12 +220,48 @@ export function OrderScreen() {
       )}
       {o.status === "creating" && <Loader text="Создаём платёж…" />}
 
+      {needsProof && (
+        <div className="card proof-card" data-testid="proof">
+          <div className="proof-head">
+            <Bubble icon={proofMissing ? "paste" : "check"} tone={proofMissing ? "warn" : "ok"} />
+            <div>
+              <div className="proof-title">{proofMissing ? "Загрузите скриншот оплаты" : "Скриншот загружен"}</div>
+              <div className="proof-sub">
+                {proofMissing ? "Остался один шаг — без него новую заявку создать нельзя." : "Спасибо, всё готово."}
+              </div>
+            </div>
+          </div>
+          {proofMissing && (
+            <p className="proof-text">
+              Нужен скриншот из истории операций в приложении банка, где чётко видна эта успешная операция покупки, а
+              также все прошлые операции, которые попадают в скриншот. Фото или файл (JPG, PNG, PDF), до 10 МБ.
+            </p>
+          )}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*,application/pdf"
+            hidden
+            data-testid="proof-input"
+            onChange={(e) => void uploadProof(e.target.files?.[0])}
+          />
+          {proofError && <div className="field-error">{proofError}</div>}
+          {!proofMissing && (
+            <button className="btn btn-secondary btn-block" disabled={uploading} onClick={() => fileInput.current?.click()}>
+              {uploading ? "Загружаем…" : "Заменить скриншот"}
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="card">
         {final && <Row label="Сумма">{formatRub(o.amount_rub)}</Row>}
         <Row label={o.status === "paid" ? "Зачислено" : "Будет зачислено"}>
           {formatUsdt(o.status === "paid" ? (o.credited_usdt ?? o.usdt_amount) : o.usdt_amount)}
         </Row>
         <Row label="Курс">{o.rate} ₽</Row>
+        {o.buyer_phone && <Row label="Телефон покупателя">{formatRuPhone(o.buyer_phone)}</Row>}
+        {o.buyer_name && <Row label="ФИО покупателя">{o.buyer_name}</Row>}
       </div>
 
       {error && <Notice tone="bad">{error}</Notice>}
@@ -209,8 +274,13 @@ export function OrderScreen() {
             {cancel}
           </>
         )}
+        {proofMissing && (
+          <button className="btn btn-primary btn-block" disabled={uploading} onClick={() => fileInput.current?.click()}>
+            {uploading ? "Загружаем…" : "Загрузить скриншот"}
+          </button>
+        )}
         {!active && (
-          <button className="btn btn-primary btn-block" onClick={() => nav("/")}>
+          <button className={`btn btn-block ${proofMissing ? "btn-ghost" : "btn-primary"}`} onClick={() => nav("/")}>
             На главную
           </button>
         )}

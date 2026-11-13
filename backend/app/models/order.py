@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, Numeric, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer, LargeBinary, Numeric, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.enums import OrderSource, OrderStatus
@@ -25,6 +25,11 @@ class Order(Base):
             unique=True,
             postgresql_where=text("status IN ('creating', 'pending')"),
         ),
+        Index(
+            "ix_orders_proof_missing",
+            "user_id",
+            postgresql_where=text("status = 'paid' AND proof_required AND proof_uploaded_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -43,6 +48,10 @@ class Order(Base):
     qr_url: Mapped[str | None] = mapped_column(Text)
     paid_amount_rub: Mapped[int | None] = mapped_column(Integer)
     payer_info: Mapped[dict[str, Any] | None]
+    buyer_phone: Mapped[str | None] = mapped_column(Text)
+    buyer_name: Mapped[str | None] = mapped_column(Text)
+    proof_required: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
+    proof_uploaded_at: Mapped[datetime | None]
     review_reason: Mapped[str | None] = mapped_column(Text)
     source: Mapped[OrderSource] = mapped_column(pg_enum(OrderSource, "order_source"), nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(Text)
@@ -52,3 +61,17 @@ class Order(Base):
     expires_at: Mapped[datetime] = mapped_column(nullable=False)
     paid_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
+
+
+class OrderProof(Base):
+    """Payment screenshot uploaded by the client after a successful payment (one per order, replaceable)."""
+
+    __tablename__ = "order_proofs"
+
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    content_type: Mapped[str] = mapped_column(Text, nullable=False)
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)  # "webapp" | "bot"
+    uploaded_at: Mapped[datetime] = mapped_column(nullable=False)

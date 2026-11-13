@@ -21,12 +21,28 @@ def order_caption(public_id: str, amount_rub: int, usdt: Decimal, expires_at: da
     )
 
 
-def order_paid(public_id: str, credited: Decimal, balance: Decimal) -> str:
-    return (
+PROOF_HINT = (
+    "скриншот из истории операций в приложении банка, где чётко видна эта успешная операция покупки "
+    "и все прошлые операции, которые попадают в скриншот"
+)
+
+
+def order_paid(public_id: str, credited: Decimal, balance: Decimal, needs_proof: bool = False) -> str:
+    text = (
         f"✅ Оплата по заявке <b>{public_id}</b> получена.\n"
         f"Зачислено: <b>{format_usdt(credited)} USDT</b>\n"
         f"Баланс: <b>{format_usdt(balance)} USDT</b>"
     )
+    if needs_proof:
+        text += (
+            f"\n\n📎 <b>Остался один шаг:</b> пришлите в этот чат фото или файл — {PROOF_HINT}. "
+            "Пока скриншот не загружен, новую заявку создать нельзя."
+        )
+    return text
+
+
+def proof_saved(public_id: str) -> str:
+    return f"✅ Скриншот по заявке <b>{public_id}</b> получен. Можно создавать новую заявку."
 
 
 def order_expired(public_id: str) -> str:

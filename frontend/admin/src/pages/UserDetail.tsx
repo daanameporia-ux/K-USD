@@ -110,6 +110,9 @@ function Overview({ user, onChanged }: { user: User; onChanged: () => Promise<vo
             {user.daily_turnover_limit_rub ? formatRub(user.daily_turnover_limit_rub) : "общий"}
           </Row>
           <Row label="Антифрод">{user.af_enabled ? "включён" : "выключен"}</Row>
+          <Row label="Телефон покупателя (СБП)">{user.require_buyer_phone ? "обязателен" : "не требуется"}</Row>
+          <Row label="ФИО покупателя">{user.require_buyer_name ? "обязательно" : "не требуется"}</Row>
+          <Row label="Скриншот после оплаты">{user.require_payment_proof ? "обязателен" : "не требуется"}</Row>
           <Row label="Создание заявок">{user.can_create_orders ? "разрешено" : "запрещено"}</Row>
           {user.orders_block_reason && <Row label="Причина блокировки">{user.orders_block_reason}</Row>}
           <Row label="Сброс антифрода">{formatDateTime(user.af_reset_at)}</Row>
@@ -312,6 +315,9 @@ function EditUser({ user, onChanged }: { user: User; onChanged: () => Promise<vo
     order_max_rub: user.order_max_rub ? String(user.order_max_rub) : "",
     daily_turnover_limit_rub: user.daily_turnover_limit_rub ? String(user.daily_turnover_limit_rub) : "",
     af_enabled: user.af_enabled,
+    require_buyer_phone: user.require_buyer_phone,
+    require_buyer_name: user.require_buyer_name,
+    require_payment_proof: user.require_payment_proof,
     is_suspicious: user.is_suspicious,
     blocked: user.status === "blocked",
   });
@@ -340,6 +346,8 @@ function EditUser({ user, onChanged }: { user: User; onChanged: () => Promise<vo
         else return "Чтобы убрать индивидуальные лимиты, отметьте «Сбросить индивидуальные лимиты».";
       }
     if (f.af_enabled !== init.af_enabled) body.af_enabled = f.af_enabled;
+    for (const k of ["require_buyer_phone", "require_buyer_name", "require_payment_proof"] as const)
+      if (f[k] !== init[k]) body[k] = f[k];
     if (f.is_suspicious !== init.is_suspicious) body.is_suspicious = f.is_suspicious;
     if (f.blocked !== init.blocked) body.status = f.blocked ? "blocked" : "active";
     if (Object.keys(body).length === 0) return "Нет изменений.";
@@ -406,6 +414,21 @@ function EditUser({ user, onChanged }: { user: User; onChanged: () => Promise<vo
         />
         <Check label="Сбросить индивидуальные лимиты" checked={clearLimits} onChange={setClearLimits} />
         <Check label="Антифрод включён для клиента" checked={f.af_enabled} onChange={(v) => setF({ ...f, af_enabled: v })} />
+        <Check
+          label="Требовать телефон покупателя (привязан к СБП) в каждой заявке"
+          checked={f.require_buyer_phone}
+          onChange={(v) => setF({ ...f, require_buyer_phone: v })}
+        />
+        <Check
+          label="Требовать ФИО покупателя в каждой заявке"
+          checked={f.require_buyer_name}
+          onChange={(v) => setF({ ...f, require_buyer_name: v })}
+        />
+        <Check
+          label="Требовать скриншот истории операций после оплаты"
+          checked={f.require_payment_proof}
+          onChange={(v) => setF({ ...f, require_payment_proof: v })}
+        />
         <Check label="Подозрительный" checked={f.is_suspicious} onChange={(v) => setF({ ...f, is_suspicious: v })} />
         <Check label="Заблокирован" checked={f.blocked} onChange={(v) => setF({ ...f, blocked: v })} />
         <TextField label="Комментарий для аудита" value={comment} onChange={setComment} maxLength={1000} />

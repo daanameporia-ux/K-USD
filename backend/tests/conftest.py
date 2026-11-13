@@ -85,6 +85,11 @@ async def clean_db(request: pytest.FixtureRequest) -> AsyncIterator[None]:
     tables = ", ".join(f'"{t.name}"' for t in Base.metadata.sorted_tables)
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        # Buyer details (phone, full name, payment screenshot) are on for every new client in production.
+        # Tests that are not about them run with the requirements off; `@pytest.mark.buyer_details` keeps them on.
+        default = "true" if request.node.get_closest_marker("buyer_details") else "false"
+        for column in ("require_buyer_phone", "require_buyer_name", "require_payment_proof"):
+            await conn.execute(text(f"ALTER TABLE users ALTER COLUMN {column} SET DEFAULT {default}"))
     yield
 
 

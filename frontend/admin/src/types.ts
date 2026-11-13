@@ -119,6 +119,12 @@ export interface Order {
   payer_info: unknown;
   review_reason: string | null;
   source: string;
+  buyer_phone: string | null;
+  buyer_name: string | null;
+  proof_required: boolean;
+  proof_uploaded_at: string | null;
+  /** Payment screenshot uploaded by the client (order card only). */
+  proof?: { content_type: string; filename: string; size: number; source: string } | null;
   user?: UserRef | null;
 }
 
@@ -151,6 +157,9 @@ export interface User {
   orders_block_reason: string | null;
   is_suspicious: boolean;
   af_enabled: boolean;
+  require_buyer_phone: boolean;
+  require_buyer_name: boolean;
+  require_payment_proof: boolean;
   af_reset_at: string | null;
   bot_blocked: boolean;
   created_at: string | null;
