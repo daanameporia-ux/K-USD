@@ -30,7 +30,6 @@ def preview_text(q: Quote, buyer: dict[str, Any] | None = None) -> str:
         amount=format_rub(q.amount_rub),
         rate=format_rate(q.rate),
         markup=f"{q.markup_pct.normalize():f}",
-        margin=format_rub(q.margin_rub),
         usdt=format_usdt(q.usdt_amount),
     )
     if buyer and buyer.get("phone"):

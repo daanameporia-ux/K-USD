@@ -62,7 +62,7 @@ BUY_PREVIEW = (
     "Проверьте заявку:\n\n"
     "Сумма к оплате: <b>{amount} ₽</b>\n"
     "Курс: {rate} ₽ за 1 USDT\n"
-    "Комиссия сервиса: {markup}% ({margin} ₽)\n"
+    "Комиссия сервиса: {markup}%\n"
     "К зачислению: <b>{usdt} USDT</b>"
 )
 BUY_PREVIEW_PHONE = "\nТелефон покупателя (СБП): <b>{phone}</b>"

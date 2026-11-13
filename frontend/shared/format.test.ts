@@ -8,6 +8,7 @@ import {
   rangeMessage,
   sanitizeRubInput,
   formatRuPhone,
+  formatRuPhoneInput,
   normalizeFullName,
   normalizeRuPhone,
   validateRub,
@@ -82,6 +83,24 @@ describe("buyer details", () => {
     for (const bad of ["", "+74951234567", "+380501234567", "+7916123456", "+791612345678", "+7916123456a"]) {
       expect(normalizeRuPhone(bad)).toBeNull();
     }
+  });
+  it("keeps the +7 prefix in the phone field and formats what is typed", () => {
+    expect(formatRuPhoneInput("")).toBe("+7 ");
+    expect(formatRuPhoneInput("+7 9", "+7 ")).toBe("+7 9");
+    expect(formatRuPhoneInput("+7 9161", "+7 916")).toBe("+7 916 1");
+    expect(formatRuPhoneInput("+7 916 123-45-67")).toBe("+7 916 123-45-67");
+    expect(formatRuPhoneInput("+7 916 123-45-678", "+7 916 123-45-67")).toBe("+7 916 123-45-67");
+    // a pasted full number in any notation
+    for (const pasted of ["89161234567", "79161234567", "+79161234567", "8 (916) 123-45-67", "9161234567"]) {
+      expect(formatRuPhoneInput(pasted, "+7 ")).toBe("+7 916 123-45-67");
+    }
+    // erasing: a separator takes the digit before it, the prefix cannot be erased
+    expect(formatRuPhoneInput("+7 916 123-45-6", "+7 916 123-45-67")).toBe("+7 916 123-45-6");
+    expect(formatRuPhoneInput("+7 916 123-45", "+7 916 123-45-")).toBe("+7 916 123-4");
+    expect(formatRuPhoneInput("+7 916", "+7 916 ")).toBe("+7 91");
+    expect(formatRuPhoneInput("+7", "+7 ")).toBe("+7 ");
+    expect(formatRuPhoneInput("", "+7 ")).toBe("+7 ");
+    expect(normalizeRuPhone(formatRuPhoneInput("89161234567"))).toBe("+79161234567");
   });
   it("checks the full name", () => {
     expect(normalizeFullName("  Иванов   Иван Иванович ")).toBe("Иванов Иван Иванович");

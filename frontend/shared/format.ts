@@ -159,3 +159,25 @@ export function normalizeFullName(text: string): string | null {
   if (words.length < 2 || words.length > 6 || name.length > 120 || !words.every((w) => word.test(w))) return null;
   return name;
 }
+
+/**
+ * Phone field with a fixed "+7" prefix: whatever is typed or pasted becomes "+7 9XX XXX-XX-XX" (as far as entered).
+ * `prev` is the previous field value: when a separator was erased, the digit before it goes too.
+ */
+export function formatRuPhoneInput(raw: string, prev: string = ""): string {
+  const national = (text: string): string => {
+    const digits = text.replace(/\D/g, "");
+    if (text.trim().startsWith("+7")) return digits.slice(1);
+    // a full number pasted over the field: 8 916 … or 7 916 …
+    if (digits.length >= 11 && (digits[0] === "7" || digits[0] === "8")) return digits.slice(1);
+    return digits;
+  };
+  let d = national(raw);
+  if (raw.length < prev.length && d === national(prev)) d = d.slice(0, -1);
+  d = d.slice(0, 10);
+  let out = "+7 " + d.slice(0, 3);
+  if (d.length > 3) out += " " + d.slice(3, 6);
+  if (d.length > 6) out += "-" + d.slice(6, 8);
+  if (d.length > 8) out += "-" + d.slice(8, 10);
+  return out;
+}

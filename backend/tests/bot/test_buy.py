@@ -38,7 +38,7 @@ async def test_full_purchase_flow(bot, container, fake_tg) -> None:
     await bot.send(30, "1 000")
     preview = bot.last(30)
     assert "Сумма к оплате: <b>1 000 ₽</b>" in preview
-    assert "Комиссия сервиса: 5% (50 ₽)" in preview and "К зачислению: <b>9.50 USDT</b>" in preview
+    assert "Комиссия сервиса: 5%\n" in preview and "(50" not in preview and "К зачислению: <b>9.50 USDT</b>" in preview
     assert bot.callback_data(30) == ["buy:confirm:1000:9.50", "nav:cancel"]
     preview_msg_id = fake_tg.of("sendMessage")[-1]
     msg_id = fake_tg.next_message_id

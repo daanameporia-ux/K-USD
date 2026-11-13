@@ -109,6 +109,7 @@ async function clientSmoke(browser, base) {
   await page.getByRole("button", { name: "Продолжить" }).click();
   // Buyer details: the step cannot be passed without a valid Russian phone number and a full name.
   await page.getByText("привязан к СБП").waitFor();
+  if ((await page.getByTestId("buyer-phone").inputValue()) !== "+7 ") throw new Error("the phone field must start with +7");
   await page.getByRole("button", { name: "Продолжить" }).click();
   await page.getByText("Введите российский номер").waitFor();
   await page.getByText("Укажите ФИО полностью").waitFor();
@@ -117,7 +118,11 @@ async function clientSmoke(browser, base) {
   await page.getByRole("button", { name: "Продолжить" }).click();
   await page.getByText("Введите российский номер").waitFor();
   if (await page.getByText("К зачислению").count()) throw new Error("a landline number must not pass the buyer step");
-  await page.getByTestId("buyer-phone").fill("8 (916) 123-45-67");
+  // The field always keeps "+7": the client clears it and just types the number starting from 9.
+  await page.getByTestId("buyer-phone").fill("");
+  if ((await page.getByTestId("buyer-phone").inputValue()) !== "+7 ") throw new Error("the phone field must keep the +7 prefix");
+  await page.getByTestId("buyer-phone").pressSequentially("9161234567");
+  if ((await page.getByTestId("buyer-phone").inputValue()) !== "+7 916 123-45-67") throw new Error("the typed phone is not formatted");
   await page.getByRole("button", { name: "Продолжить" }).click();
   await page.getByText("К зачислению").waitFor();
   await page.getByText("+7 916 123-45-67").waitFor();

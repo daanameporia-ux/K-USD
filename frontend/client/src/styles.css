@@ -232,8 +232,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .receive-label { font-size: 13px; color: var(--hint); }
 .big-usdt { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
 .big-usdt .money-unit, .order-amount .money-unit { font-size: 0.6em; color: var(--hint); margin-left: 5px; font-weight: 600; }
-.receive-meta { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--border); }
-.receive-meta .row:last-child { padding-bottom: 0; }
+.receive-meta { margin-bottom: 14px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.receive-meta .row:first-child { padding-top: 0; }
 
 .input, textarea.input {
   border: 1.5px solid transparent; border-radius: 16px; padding: 14px; background: var(--bg); font-size: 16px;

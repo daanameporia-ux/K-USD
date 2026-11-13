@@ -7,6 +7,7 @@ import {
   formatRate,
   formatRub,
   formatRuPhone,
+  formatRuPhoneInput,
   formatUsdt,
   normalizeFullName,
   normalizeRuPhone,
@@ -27,7 +28,7 @@ export function Buy() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [step, setStep] = useState<"amount" | "buyer" | "confirm">("amount");
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState("+7 "); // the prefix is always there, the client types from the 9
   const [name, setName] = useState("");
   const [buyerTried, setBuyerTried] = useState(false);
   const [buyerError, setBuyerError] = useState<string | null>(null);
@@ -185,10 +186,10 @@ export function Buy() {
                 inputMode="tel"
                 autoComplete="off"
                 placeholder="+7 900 000-00-00"
-                maxLength={20}
+                maxLength={24}
                 value={phone}
                 data-testid="buyer-phone"
-                onChange={(e) => setPhone(e.target.value.replace(/[^\d+()\-\s]/g, ""))}
+                onChange={(e) => setPhone(formatRuPhoneInput(e.target.value, phone))}
               />
               {buyerTried && phoneBad ? (
                 <div className="field-error">{MSG_BUYER_PHONE}</div>
@@ -244,9 +245,7 @@ export function Buy() {
         </div>
         <div className="card">
           <Row label="Курс">{formatRate(quote.rate)}</Row>
-          <Row label="Комиссия сервиса">
-            {quote.markup_pct}% ({formatRub(quote.fee_rub)})
-          </Row>
+          <Row label="Комиссия сервиса">{quote.markup_pct}%</Row>
           <div className="row row-total">
             <span className="row-label">К зачислению</span>
             <span className="row-value">{formatUsdt(quote.usdt_amount)}</span>
@@ -305,6 +304,10 @@ export function Buy() {
         ))}
       </div>
       <div className="card">
+        <div className="receive-meta">
+          <Row label="Курс">{quoteReady && quote ? formatRate(quote.rate) : "—"}</Row>
+          <Row label="Комиссия">{me.data.markup_pct}%</Row>
+        </div>
         <div className="receive">
           <Bubble icon="down" tone="ok" />
           <div>
@@ -314,14 +317,6 @@ export function Buy() {
             </div>
           </div>
         </div>
-        {quoteReady && quote && (
-          <div className="receive-meta">
-            <Row label="Курс">{formatRate(quote.rate)}</Row>
-            <Row label="Комиссия">
-              {quote.markup_pct}% ({formatRub(quote.fee_rub)})
-            </Row>
-          </div>
-        )}
         {quoteError && <div className="field-error">{quoteError}</div>}
       </div>
       <Footer>
