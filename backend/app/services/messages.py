@@ -41,6 +41,14 @@ def order_paid(public_id: str, credited: Decimal, balance: Decimal, needs_proof:
     return text
 
 
+def proof_rejected(public_id: str, comment: str) -> str:
+    return (
+        f"❌ Скриншот по заявке <b>{public_id}</b> не принят.\nПричина: {escape_html(comment)}\n\n"
+        f"Пришлите новый — фото или файл в этот чат либо в приложении на экране заявки. Нужен {PROOF_HINT}.\n\n"
+        "Пока скриншот не загружен, новые заявки и вывод недоступны."
+    )
+
+
 def proof_saved(public_id: str) -> str:
     return f"✅ Скриншот по заявке <b>{public_id}</b> получен. Можно создавать новую заявку."
 

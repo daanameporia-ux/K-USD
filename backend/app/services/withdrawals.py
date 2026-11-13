@@ -22,7 +22,7 @@ from app.domain.text import escape_html
 from app.domain.verify import FINAL_FAILURES, LABELS, evaluate
 from app.logging import get_logger
 from app.models import AddressBlacklist, LedgerEntry, User, Withdrawal
-from app.services import antifraud, audit, history, ledger, notify
+from app.services import antifraud, audit, history, ledger, notify, proofs
 from app.services import settings as settings_svc
 from app.services import users as users_svc
 from app.services.actor import Actor
@@ -92,6 +92,21 @@ async def get_config(c: Container, user_id: int) -> WithdrawConfig:
     )
 
 
+MSG_PROOF_FIRST = "Сначала загрузите скриншот оплаты по заявке {public_id} — без него вывод недоступен."
+
+
+async def _check_proof_uploaded(session: AsyncSession, user: User) -> None:
+    """The client cannot ask for a withdrawal while a paid order waits for its payment screenshot."""
+    unproved = await proofs.pending_proof(session, user)
+    if unproved is not None:
+        raise ServiceError(
+            "proof_required",
+            MSG_PROOF_FIRST.format(public_id=unproved.public_id),
+            status=409,
+            details={"order_id": unproved.id, "public_id": unproved.public_id},
+        )
+
+
 def _base_checks(user: User, biz: BizSettings) -> None:
     if not biz.withdrawals_enabled:
         raise ServiceError("withdrawals_disabled", MSG_DISABLED, status=403)
@@ -103,6 +118,7 @@ async def start(c: Container, user_id: int) -> WithdrawConfig:
         user = await users_svc.get(session, user_id)
         biz = await settings_svc.load(session)
         _base_checks(user, biz)
+        await _check_proof_uploaded(session, user)
     cfg = await get_config(c, user_id)
     if cfg.available < cfg.min_amount:
         raise ServiceError(
@@ -151,6 +167,7 @@ async def _validate(
     session: AsyncSession, user: User, biz: BizSettings, network: Network, address: str, amount: Decimal, now: datetime
 ) -> WithdrawPreview:
     _base_checks(user, biz)
+    await _check_proof_uploaded(session, user)
     normalized = await check_address(session, biz, network, address)
     if amount != amount.quantize(CENT, rounding=ROUND_DOWN) or amount <= 0:
         raise ServiceError("invalid_amount", "Укажите сумму с точностью не более 2 знаков после точки.")
@@ -309,6 +326,9 @@ def _check_b6(w: Withdrawal, actor: Actor, biz: BizSettings) -> None:
 async def take(c: Container, withdrawal_id: int, actor: Actor, ip: str | None = None) -> Withdrawal:
     now = c.clock.now()
     async with c.db.begin() as session:
+        queued = await session.get(Withdrawal, withdrawal_id)
+        if queued is not None and queued.status == WithdrawalStatus.pending:
+            await proofs.ensure_reviewed(session, queued.user_id)
         result = await session.execute(
             update(Withdrawal)
             .where(Withdrawal.id == withdrawal_id, Withdrawal.status == WithdrawalStatus.pending)
@@ -418,6 +438,7 @@ async def submit_hash(
         _check_assignee(w, actor)
         biz = await settings_svc.load(session)
         _check_b6(w, actor, biz)
+        await proofs.ensure_reviewed(session, w.user_id)  # a new paid order may have appeared since `take`
         try:
             normalized = normalize_tx_hash(w.network, tx_hash)
         except TxHashError as exc:
@@ -603,6 +624,8 @@ async def force_complete(
         w = await _lock(session, withdrawal_id)
         if w.status not in (WithdrawalStatus.in_progress, WithdrawalStatus.verifying):
             raise Conflict("cannot_force", "Принудительно закрыть можно только заявку в работе или на проверке.")
+        if w.status == WithdrawalStatus.in_progress:  # on `verifying` the transfer has already been sent
+            await proofs.ensure_reviewed(session, w.user_id)
         before = {"status": w.status.value, "tx_hash": w.tx_hash}
         # Bind the transfer hash to this withdrawal so that the same transfer can never close another one:
         # an explicit hash, the current one, or the last hash that failed verification (kept in verify_details).

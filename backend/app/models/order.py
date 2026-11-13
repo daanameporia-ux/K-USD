@@ -52,6 +52,9 @@ class Order(Base):
     buyer_name: Mapped[str | None] = mapped_column(Text)
     proof_required: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     proof_uploaded_at: Mapped[datetime | None]
+    # A staff member looked at the screenshot; withdrawals of the client wait for it.
+    proof_reviewed_at: Mapped[datetime | None]
+    proof_reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("staff.id"))
     review_reason: Mapped[str | None] = mapped_column(Text)
     source: Mapped[OrderSource] = mapped_column(pg_enum(OrderSource, "order_source"), nullable=False)
     idempotency_key: Mapped[str | None] = mapped_column(Text)

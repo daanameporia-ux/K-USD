@@ -1,63 +1,19 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { formatDateTime, formatRate, formatRuPhone, formatRub, formatUsdt } from "@shared/format";
 import { confirmAction } from "@shared/telegram";
-import { AsyncButton, CopyButton, ErrorView, Loader, Notice, Row, StatusBadge, errorMessage, useLoad } from "@shared/ui";
+import { AsyncButton, CopyButton, ErrorView, Loader, Notice, Row, StatusBadge, useLoad } from "@shared/ui";
 import { adminPath, api } from "../api";
 import { useMe } from "../auth";
 import { ExternalLink, PageHeader, Section, useAction } from "../components";
 import { compactJson, formatPct, parsePositiveInt, userTitle } from "../helpers";
+import { ProofReview } from "../proofs";
 import type { Order } from "../types";
 
 interface SimulateResult {
   callback_status: string;
   result: unknown;
   order: Order;
-}
-
-/** The client's payment screenshot: loaded on demand with the staff token, shown inline when it is an image. */
-function ProofView({ order }: { order: Order }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const proof = order.proof;
-  useEffect(() => {
-    setUrl(null);
-    setError(null);
-  }, [order.id, order.proof_uploaded_at]);
-  useEffect(() => () => void (url && URL.revokeObjectURL(url)), [url]);
-  if (!proof) return null;
-  const inline = ["image/jpeg", "image/png", "image/webp"].includes(proof.content_type);
-  return (
-    <div className="stack">
-      {error && <div className="field-error">{error}</div>}
-      {url ? (
-        <>
-          {inline && (
-            <a href={url} target="_blank" rel="noreferrer">
-              <img className="proof-img" src={url} alt="Скриншот оплаты" />
-            </a>
-          )}
-          <a className="btn btn-secondary" href={url} download={proof.filename}>
-            Скачать файл ({proof.filename})
-          </a>
-        </>
-      ) : (
-        <AsyncButton
-          variant="secondary"
-          onClick={async () => {
-            setError(null);
-            try {
-              setUrl(await api.blobUrl(adminPath(`/orders/${order.id}/proof`)));
-            } catch (e) {
-              setError(errorMessage(e));
-            }
-          }}
-        >
-          Показать скриншот
-        </AsyncButton>
-      )}
-    </div>
-  );
 }
 
 export function OrderDetailPage() {
@@ -200,7 +156,12 @@ export function OrderDetailPage() {
                 ? "ожидается от клиента"
                 : "будет запрошен после оплаты"}
         </Row>
-        <ProofView order={o} />
+        {o.proof_uploaded_at && (
+          <Row label="Проверка скриншота">
+            {o.proof_reviewed_at ? `проверен ${formatDateTime(o.proof_reviewed_at)}` : "не проверен"}
+          </Row>
+        )}
+        <ProofReview order={o} onChanged={keep} />
       </Section>
 
       {o.status === "review" && (

@@ -63,6 +63,8 @@ export interface VerifyDetails {
 }
 
 export interface Withdrawal {
+  /** Payment screenshots of the client that staff must review before this withdrawal moves on. */
+  proofs?: { to_review: number; missing: number; reviewed: number; blocking: number; orders: Order[] };
   id: number;
   public_id: string;
   status: string;
@@ -123,6 +125,8 @@ export interface Order {
   buyer_name: string | null;
   proof_required: boolean;
   proof_uploaded_at: string | null;
+  proof_reviewed_at: string | null;
+  proof_reviewed_by: number | null;
   /** Payment screenshot uploaded by the client (order card only). */
   proof?: { content_type: string; filename: string; size: number; source: string } | null;
   user?: UserRef | null;

@@ -25,7 +25,7 @@ from app.domain.statuses import order_transition
 from app.logging import get_logger
 from app.models import Order, OrderProof, PaymentCallback, User
 from app.payments.base import CallbackEvent, PaymentProvider
-from app.services import antifraud, audit, ledger, messages, notify, rates
+from app.services import antifraud, audit, ledger, messages, notify, proofs, rates
 from app.services import settings as settings_svc
 from app.services import users as users_svc
 from app.services.settings import BizSettings
@@ -96,23 +96,7 @@ async def active_order(session: AsyncSession, user_id: int) -> Order | None:
     return result
 
 
-async def pending_proof(session: AsyncSession, user: User) -> Order | None:
-    """The oldest paid order of the client that still waits for the payment screenshot."""
-    if not user.require_payment_proof:
-        return None
-    stmt = (
-        select(Order)
-        .where(
-            Order.user_id == user.id,
-            Order.status == OrderStatus.paid,
-            Order.proof_required.is_(True),
-            Order.proof_uploaded_at.is_(None),
-        )
-        .order_by(Order.id)
-        .limit(1)
-    )
-    result: Order | None = (await session.execute(stmt)).scalar_one_or_none()
-    return result
+pending_proof = proofs.pending_proof
 
 
 @dataclass(frozen=True)
@@ -418,6 +402,8 @@ async def attach_proof(c: Container, user_id: int, order_id: int, data: bytes, *
         stmt = insert(OrderProof).values(order_id=order.id, **values)
         await session.execute(stmt.on_conflict_do_update(index_elements=[OrderProof.order_id], set_=values))
         order.proof_uploaded_at = now
+        order.proof_reviewed_at = None  # a replaced file has to be looked at again
+        order.proof_reviewed_by = None
         return order
 
 

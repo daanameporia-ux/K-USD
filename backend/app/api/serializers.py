@@ -82,6 +82,8 @@ def order(o: Order, *, admin: bool = False) -> dict[str, Any]:
                 "payer_info": o.payer_info,
                 "review_reason": o.review_reason,
                 "source": o.source.value,
+                "proof_reviewed_at": ts(o.proof_reviewed_at),
+                "proof_reviewed_by": o.proof_reviewed_by,
             }
         )
     return data

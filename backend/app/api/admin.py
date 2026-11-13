@@ -29,7 +29,7 @@ from app.models import (
     User,
     Withdrawal,
 )
-from app.services import antifraud, audit, auth, ledger, notify, orders, rates, stats, withdrawals
+from app.services import antifraud, audit, auth, ledger, notify, orders, proofs, rates, stats, withdrawals
 from app.services import settings as settings_svc
 from app.services import staff as staff_svc
 from app.services import users as users_svc
@@ -115,7 +115,17 @@ async def _withdrawal_view(c: Container, w: Withdrawal) -> dict[str, Any]:
     async with c.db() as session:
         user = await session.get(User, w.user_id)
         assigned = await session.get(Staff, w.assigned_staff_id) if w.assigned_staff_id else None
+        state = await proofs.review_state(session, user) if user else proofs.ReviewState(0, 0, 0)
+        waiting = await proofs.awaiting_review(session, user) if user else []
     data = ser.withdrawal(w, admin=True)
+    # Payment screenshots of the client's paid orders: all of them are reviewed before the withdrawal moves on.
+    data["proofs"] = {
+        "to_review": state.to_review,
+        "missing": state.missing,
+        "reviewed": state.reviewed,
+        "blocking": state.blocking,
+        "orders": [ser.order(o, admin=True) for o in waiting],
+    }
     data["user"] = (
         {"id": user.id, "tg_id": user.tg_id, "tg_username": user.tg_username, "is_suspicious": user.is_suspicious}
         if user
@@ -340,6 +350,30 @@ async def get_order_proof(
             "Cache-Control": "private, no-store",
         },
     )
+
+
+class ProofRejectIn(BaseModel):
+    comment: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/orders/{order_id}/proof/review")
+async def review_order_proof(
+    order_id: Id, request: Request, sa: StaffAuth = Depends(staff_auth), c: Container = Depends(container)
+) -> dict[str, Any]:
+    """The staff member has looked at the screenshot and accepts it."""
+    return ser.order(await proofs.review(c, order_id, sa.staff.id, client_ip(request)), admin=True)
+
+
+@router.post("/orders/{order_id}/proof/reject")
+async def reject_order_proof(
+    order_id: Id,
+    body: ProofRejectIn,
+    request: Request,
+    sa: StaffAuth = Depends(staff_auth),
+    c: Container = Depends(container),
+) -> dict[str, Any]:
+    """The screenshot is not acceptable: it is deleted and the client is asked to send a new one."""
+    return ser.order(await proofs.reject(c, order_id, sa.staff.id, body.comment, client_ip(request)), admin=True)
 
 
 @router.post("/orders/{order_id}/resolve-review")

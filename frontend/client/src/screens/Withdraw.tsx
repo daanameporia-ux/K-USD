@@ -4,7 +4,7 @@ import { Attempt } from "@shared/api";
 import { formatUsdt, validateUsdt } from "@shared/format";
 import { confirmAction, haptic, readClipboard } from "@shared/telegram";
 import { AsyncButton, ErrorView, Loader, Notice, Row, StatusBadge, errorMessage, useLoad } from "@shared/ui";
-import { api, type SavedAddress, type WithdrawConfig, type WithdrawPreview, type Withdrawal } from "../api";
+import { api, type Me, type SavedAddress, type WithdrawConfig, type WithdrawPreview, type Withdrawal } from "../api";
 import { AmountField, Bubble, Footer, Icon, Result, TopBar } from "./common";
 
 type Step = "network" | "address" | "amount" | "preview" | "done";
@@ -22,6 +22,7 @@ function trimAmount(available: string): string {
 export function Withdraw() {
   const nav = useNavigate();
   const cfg = useLoad(() => api.get<WithdrawConfig>("/api/client/withdrawals/config"));
+  const me = useLoad(() => api.get<Me>("/api/client/me"));
   const book = useLoad(() => api.get<{ items: SavedAddress[]; max: number }>("/api/client/addresses"));
   const [rawStep, setStep] = useState<Step>("network");
   const [pickedNetwork, setNetwork] = useState<string | null>(null);
@@ -122,6 +123,23 @@ export function Withdraw() {
       <div className="screen">
         <TopBar title="Вывод" />
         <Notice tone="warn">Вывод временно приостановлен. Попробуйте позже.</Notice>
+      </div>
+    );
+  }
+
+  const waiting = me.data?.proof_pending_order;
+  if (waiting && step !== "done") {
+    return (
+      <div className="screen">
+        <TopBar title="Вывод" />
+        <Notice tone="warn">
+          Сначала загрузите скриншот оплаты по заявке {waiting.public_id}. Без него вывод недоступен.
+        </Notice>
+        <Footer>
+          <button className="btn btn-primary btn-block" onClick={() => nav(`/order/${waiting.id}`)}>
+            Загрузить скриншот
+          </button>
+        </Footer>
       </div>
     );
   }

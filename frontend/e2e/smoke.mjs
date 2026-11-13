@@ -194,7 +194,14 @@ const WITHDRAWAL = {
 const STAFF = { id: 2, tg_id: 1, tg_username: "op", role: "operator", is_active: true, is_superadmin: false, login: null,
   totp_enabled: false, invite_pending: false, invite_expires_at: null, created_at: iso(now), last_login_at: iso(now) };
 
+const PAID = { ...ORDER, status: "paid", status_label: "Оплачена", credited_usdt: "9.50", paid_at: iso(now),
+  proof_uploaded_at: iso(now), proof_reviewed_at: null, proof_reviewed_by: null, user_id: 1 };
+
 async function adminSmoke(browser, base) {
+  let reviewed = false;
+  const proofs = () => reviewed
+    ? { to_review: 0, missing: 0, reviewed: 1, blocking: 0, orders: [] }
+    : { to_review: 1, missing: 0, reviewed: 0, blocking: 1, orders: [PAID] };
   const page = await browser.newPage({ viewport: { width: 360, height: 700 } });
   await fakeTelegram(page);
   await page.route("**/api/**", async (route) => {
@@ -206,15 +213,34 @@ async function adminSmoke(browser, base) {
       return json(route, { staff: STAFF, auth_method: "telegram", is_admin: false, payment_provider: "mock", is_mock: true,
         withdraw_admin_only_from_usdt: "5000.00", b6_enabled: true });
     if (url.pathname === "/api/admin/withdrawals") return json(route, { items: [WITHDRAWAL], next_cursor: null });
-    if (url.pathname === "/api/admin/withdrawals/5") return json(route, WITHDRAWAL);
+    if (url.pathname === "/api/admin/withdrawals/5") return json(route, { ...WITHDRAWAL, proofs: proofs() });
+    if (url.pathname === "/api/admin/orders/1/proof") return route.fulfill({ status: 200, contentType: "image/png", body: PNG });
+    if (url.pathname === "/api/admin/orders/1/proof/review" && req.method() === "POST") {
+      reviewed = true;
+      return json(route, { ...PAID, proof_reviewed_at: iso(Date.now()) });
+    }
     return json(route, { items: [], next_cursor: null });
   });
   await page.goto(base + "/admin/");
   await page.getByRole("heading", { name: "Выводы" }).first().waitFor();
   await page.getByText("Очередь").first().waitFor();
   await page.getByText("W-100001").first().waitFor();
+  // The withdrawal cannot be taken until the client's payment screenshots are opened and marked as reviewed.
+  await page.getByText("W-100001").first().click();
+  await page.getByTestId("proofs-block").waitFor();
+  const take = page.getByRole("button", { name: "Взять в работу" });
+  if (!(await take.isDisabled())) throw new Error("«Взять в работу» must be disabled while screenshots are not reviewed");
+  if (await page.getByRole("button", { name: "Проверено" }).count()) throw new Error("«Проверено» must appear only after the screenshot is opened");
+  await page.getByRole("button", { name: "Показать скриншот" }).click();
+  await page.getByAltText("Скриншот оплаты по заявке B-100001").waitFor();
+  await page.getByRole("button", { name: "Проверено" }).click();
+  await page.getByTestId("proofs-ok").waitFor();
+  if (await take.isDisabled()) throw new Error("«Взять в работу» must be enabled after the review");
+  const width = await page.evaluate(() => document.documentElement.scrollWidth);
+  if (width > 360) throw new Error(`horizontal scroll in the admin at 360px: ${width}`);
+  if (process.env.SHOTS) await page.screenshot({ path: process.env.SHOTS, fullPage: true });
   await page.close();
-  console.log("admin smoke: OK (operator opens the withdrawal queue)");
+  console.log("admin smoke: OK (withdrawal queue; screenshots are reviewed before the withdrawal is taken)");
 }
 
 const server = await preview({ configFile: resolve(root, "vite.client.config.ts"), preview: { port: 4180, strictPort: true },

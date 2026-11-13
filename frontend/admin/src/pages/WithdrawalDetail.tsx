@@ -7,6 +7,7 @@ import { adminPath, api } from "../api";
 import { useMe } from "../auth";
 import { ExternalLink, PageHeader, Section, useAction } from "../components";
 import { isAdminOnlyAmount, staffTitle, userTitle, verifyRows } from "../helpers";
+import { ClientProofs } from "../proofs";
 import type { Withdrawal } from "../types";
 
 const FINAL = ["completed", "rejected", "cancelled"];
@@ -48,6 +49,8 @@ export function WithdrawalDetailPage() {
   const canWork = mine || me.is_admin;
   // B6: from the threshold only an admin may enter the hash / close the withdrawal (backend: 403 admin_only_amount).
   const hashOnlyByAdmin = adminOnly && !me.is_admin;
+  // Screenshots of all paid orders of the client are reviewed first (backend: 409 proofs_not_reviewed).
+  const proofsBlock = (w.proofs?.blocking ?? 0) > 0;
   const rows = verifyRows(w.verify_details);
   const explorer = w.last_explorer_url ?? w.explorer_url;
 
@@ -219,17 +222,33 @@ export function WithdrawalDetailPage() {
         </Section>
       </div>
 
+      {!isFinal && w.proofs && (
+        <Section title="Скриншоты оплат клиента">
+          <ClientProofs proofs={w.proofs} onChanged={() => void reload(true)} />
+        </Section>
+      )}
+
       {!isFinal && (
         <Section title="Действия">
           <div className="stack">
             {action.view}
+            {proofsBlock && (w.status === "pending" || (w.status === "in_progress" && canWork)) && (
+              <Notice tone="warn">
+                <span data-testid="proofs-block">
+                  Сначала проверьте скриншоты оплат клиента в блоке выше. Пока они не проверены, вывод нельзя взять в
+                  работу и закрыть.
+                </span>
+              </Notice>
+            )}
             {w.status === "in_progress" && !canWork && (
               <Notice tone="info">Вывод в работе у {staffTitle(w.assigned_staff ?? null)}.</Notice>
             )}
 
             {w.status === "pending" && (
               <div className="btn-row">
-                <AsyncButton onClick={take}>Взять в работу</AsyncButton>
+                <AsyncButton onClick={take} disabled={proofsBlock}>
+                  Взять в работу
+                </AsyncButton>
               </div>
             )}
 
@@ -262,7 +281,7 @@ export function WithdrawalDetailPage() {
                   />
                 </label>
                 <div className="btn-row">
-                  <AsyncButton onClick={submitHash} disabled={!hash.trim()}>
+                  <AsyncButton onClick={submitHash} disabled={!hash.trim() || proofsBlock}>
                     Отправить на проверку
                   </AsyncButton>
                   <AsyncButton variant="secondary" onClick={release}>
