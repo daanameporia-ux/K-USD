@@ -141,8 +141,10 @@ button { -webkit-tap-highlight-color: transparent; }
 .hero .balance { font-size: 44px; line-height: 1.1; font-weight: 700; letter-spacing: -0.035em; margin: 6px 0 2px; word-break: break-word; }
 .hero .money-unit { font-size: 18px; font-weight: 600; opacity: 0.75; margin-left: 8px; letter-spacing: 0; }
 .hero-sub { font-size: 13px; opacity: 0.85; }
+.hero-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.hero-chip-label { opacity: 0.75; font-weight: 500; }
 .hero-chip {
-  display: inline-flex; align-items: center; gap: 6px; margin-top: 16px; padding: 7px 12px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px;
   background: rgba(255, 255, 255, 0.16); font-size: 13px; font-weight: 600; backdrop-filter: blur(6px);
 }
 
@@ -265,6 +267,15 @@ label.field .field-error { margin-top: 8px; }
 .proof-text { margin: 0; font-size: 14px; line-height: 1.45; }
 
 /* --- withdraw -------------------------------------------------------------------------------- */
+.book-row { display: flex; align-items: center; gap: 4px; }
+.book-row .tile { flex: 1; min-width: 0; }
+.book-del {
+  flex: none; width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--soft); color: var(--hint);
+  display: grid; place-items: center; cursor: pointer;
+}
+.book-del:active { transform: scale(0.94); }
+.check-row { display: flex; align-items: center; gap: 10px; font-size: 15px; cursor: pointer; }
+.check-row input { width: 20px; height: 20px; accent-color: var(--brand); flex: none; }
 .steps { display: flex; gap: 6px; margin: 0 0 18px; }
 .steps span { flex: 1; height: 4px; border-radius: 4px; background: var(--border); transition: background 0.2s; }
 .steps span.on { background: var(--brand); }

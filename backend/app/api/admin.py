@@ -685,7 +685,10 @@ class SettingsPatch(BaseModel):
 async def get_settings(sa: StaffAuth = Depends(admin_auth), c: Container = Depends(container)) -> dict[str, Any]:
     async with c.db() as session:
         biz = await settings_svc.load(session)
-    return {"values": settings_svc.dump(biz), "meta": settings_meta()}
+    meta = settings_meta()
+    if Network.BEP20 not in c.config.withdraw_networks:  # the fee of a network that is not offered is only noise
+        meta["general"] = [item for item in meta["general"] if item["key"] != "withdraw_fee_bep20"]
+    return {"values": settings_svc.dump(biz), "meta": meta}
 
 
 @router.patch("/settings")

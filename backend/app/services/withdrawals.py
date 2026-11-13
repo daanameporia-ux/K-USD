@@ -42,6 +42,12 @@ CENT = Decimal("0.01")
 MSG_DISABLED = "Вывод временно приостановлен. Попробуйте позже."
 
 
+def ensure_network(c: Container, network: Network) -> None:
+    """Only the networks switched on in the config (WITHDRAW_NETWORKS) are offered and accepted."""
+    if network not in c.config.withdraw_networks:
+        raise ServiceError("network_disabled", "Вывод в этой сети недоступен.")
+
+
 def fee_for(biz: BizSettings, network: Network) -> Decimal:
     return biz.withdraw_fee_trc20 if network == Network.TRC20 else biz.withdraw_fee_bep20
 
@@ -78,7 +84,7 @@ async def get_config(c: Container, user_id: int) -> WithdrawConfig:
         biz = await settings_svc.load(session)
         available = await available_for_withdrawal(session, user, biz, c.clock.now())
     return WithdrawConfig(
-        fees={n: fee_for(biz, n) for n in Network},
+        fees={n: fee_for(biz, n) for n in c.config.withdraw_networks},
         min_amount=biz.withdraw_min_usdt,
         available=available,
         balance=user.balance,
@@ -126,6 +132,7 @@ async def check_address(session: AsyncSession, biz: BizSettings, network: Networ
 
 
 async def validate_address_for_user(c: Container, network: Network, address: str) -> str:
+    ensure_network(c, network)
     async with c.db() as session:
         biz = await settings_svc.load(session)
         return await check_address(session, biz, network, address)
@@ -163,6 +170,7 @@ async def _validate(
 
 
 async def preview(c: Container, user_id: int, network: Network, address: str, amount: Decimal) -> WithdrawPreview:
+    ensure_network(c, network)
     async with c.db() as session:
         user = await users_svc.get(session, user_id)
         biz = await settings_svc.load(session)
@@ -188,6 +196,7 @@ async def find_by_key(c: Container, user_id: int, key: str) -> Withdrawal | None
 async def create(
     c: Container, user_id: int, network: Network, address: str, amount: Decimal, *, idempotency_key: str | None
 ) -> CreateResult:
+    ensure_network(c, network)
     now = c.clock.now()
     async with c.db.begin() as session:
         user = await users_svc.lock(session, user_id)

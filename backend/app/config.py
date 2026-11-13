@@ -8,6 +8,8 @@ from typing import Annotated, Literal
 from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.domain.enums import Network
+
 DEFAULT_RATE_URL = "https://api.rapira.net/open/market/rates"
 DEFAULT_BSC_RPCS = "https://bsc-dataseed.binance.org,https://bsc-dataseed1.defibit.io"
 
@@ -47,6 +49,10 @@ class Config(BaseSettings):
     bsc_rpc_urls: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: _split_csv(DEFAULT_BSC_RPCS), alias="BSC_RPC_URLS"
     )
+    # Networks offered for withdrawals. BEP20 is supported by the code but switched off: WITHDRAW_NETWORKS=TRC20,BEP20.
+    withdraw_networks: Annotated[list[Network], NoDecode] = Field(
+        default_factory=lambda: [Network.TRC20], alias="WITHDRAW_NETWORKS"
+    )
     domain: str | None = Field(None, alias="DOMAIN")
     acme_email: str | None = Field(None, alias="ACME_EMAIL")
     frontend_dir: str | None = Field(None, alias="FRONTEND_DIR")
@@ -58,6 +64,12 @@ class Config(BaseSettings):
     @classmethod
     def _parse_ids(cls, v: object) -> list[int]:
         return [int(x) for x in _split_csv(v)]
+
+    @field_validator("withdraw_networks", mode="before")
+    @classmethod
+    def _parse_networks(cls, v: object) -> list[object]:
+        items: list[object] = list(dict.fromkeys(_split_csv(v)))
+        return items or [Network.TRC20]
 
     @field_validator("bsc_rpc_urls", mode="before")
     @classmethod

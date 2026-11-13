@@ -18,7 +18,7 @@ from app.domain.enums import Network, OrderSource, OrderStatus
 from app.domain.errors import NotFound, ServiceError
 from app.domain.pricing import quote
 from app.kyc.base import KycInput
-from app.services import history, ledger, orders, rates, users, withdrawals
+from app.services import address_book, history, ledger, orders, rates, users, withdrawals
 from app.services import settings as settings_svc
 from app.services.labels import NETWORK
 from app.services.qr import qr_png
@@ -45,6 +45,12 @@ class WithdrawIn(BaseModel):
     network: Network
     address: str = Field(max_length=200)
     amount: str = Field(max_length=40)
+
+
+class AddressIn(BaseModel):
+    network: Network
+    address: str = Field(max_length=200)
+    label: str | None = Field(None, max_length=100)
 
 
 class RegisterIn(BaseModel):
@@ -252,11 +258,44 @@ async def order_cancel(
 async def wd_config(a: ClientAuth = Depends(client_auth), c: Container = Depends(container)) -> dict[str, Any]:
     cfg = await withdrawals.get_config(c, a.user.id)
     return {
-        "networks": [{"network": n.value, "label": NETWORK[n], "fee": ser.money(cfg.fees[n])} for n in Network],
+        "networks": [{"network": n.value, "label": NETWORK[n], "fee": ser.money(fee)} for n, fee in cfg.fees.items()],
         "min_amount": ser.money(cfg.min_amount),
         "available": ser.money(cfg.available),
         "enabled": cfg.enabled,
     }
+
+
+def _saved(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "network": item.network.value,
+        "network_label": NETWORK[item.network],
+        "address": item.address,
+        "label": item.label,
+    }
+
+
+@router.get("/addresses")
+async def addresses(a: ClientAuth = Depends(client_auth), c: Container = Depends(container)) -> dict[str, Any]:
+    async with c.db() as session:
+        items = await address_book.list_for(session, a.user.id, c.config.withdraw_networks)
+    return {"items": [_saved(i) for i in items], "max": address_book.MAX_ADDRESSES}
+
+
+@router.post("/addresses")
+async def address_add(
+    body: AddressIn, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
+) -> dict[str, Any]:
+    limit(c, f"addr:{a.user.id}", 30)
+    return _saved(await address_book.add(c, a.user.id, body.network, body.address, body.label))
+
+
+@router.delete("/addresses/{address_id}")
+async def address_delete(
+    address_id: Id, a: ClientAuth = Depends(client_auth), c: Container = Depends(container)
+) -> dict[str, Any]:
+    await address_book.remove(c, a.user.id, address_id)
+    return {"ok": True}
 
 
 @router.post("/withdrawals/preview")

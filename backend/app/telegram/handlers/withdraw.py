@@ -6,7 +6,7 @@ from decimal import ROUND_DOWN, Decimal
 
 from app.domain.amounts import AmountError, format_usdt, parse_usdt
 from app.domain.enums import Network
-from app.services import withdrawals
+from app.services import address_book, withdrawals
 from app.services.labels import NETWORK
 from app.telegram import keyboards, texts
 from app.telegram.client import escape_html
@@ -27,9 +27,13 @@ S_CONFIRM = "wd:confirm"
 async def cmd_withdraw(ctx: Ctx) -> None:
     assert ctx.user is not None
     cfg = await withdrawals.start(ctx.container, ctx.user.id)
+    if len(cfg.fees) == 1:  # a single network: nothing to choose
+        head = texts.WD_HEAD.format(available=format_usdt(cfg.available), min=format_usdt(cfg.min_amount))
+        await _ask_address(ctx, next(iter(cfg.fees)), head=head)
+        return
     rows = [
-        [(texts.WD_NETWORK_BTN.format(name=NETWORK[n], fee=format_usdt(cfg.fees[n])), f"wd:net:{n.value}")]
-        for n in Network
+        [(texts.WD_NETWORK_BTN.format(name=NETWORK[n], fee=format_usdt(fee)), f"wd:net:{n.value}")]
+        for n, fee in cfg.fees.items()
     ]
     rows.append([(texts.BUY_CANCEL, "nav:cancel")])
     await ctx.reply(
@@ -49,11 +53,52 @@ async def cb_network(ctx: Ctx) -> None:
         await ctx.answer("Кнопка устарела")
         return
     await withdrawals.start(ctx.container, ctx.user.id)
+    withdrawals.ensure_network(ctx.container, network)
     await ctx.answer()
+    await _ask_address(ctx, network, edit=True)
+
+
+async def _ask_address(ctx: Ctx, network: Network, *, head: str = "", edit: bool = False) -> None:
+    """Ask for the address; saved addresses of this network are offered as buttons."""
+    assert ctx.user is not None
+    async with ctx.container.db() as session:
+        saved = await address_book.list_for(session, ctx.user.id, [network])
     await ctx.fsm.set(S_ADDRESS, {"network": network.value})
-    await ctx.edit(
-        texts.WD_ASK_ADDRESS.format(network=NETWORK[network]), keyboards.inline([(texts.BUY_CANCEL, "nav:cancel")])
-    )
+    text = head + texts.WD_ASK_ADDRESS.format(network=NETWORK[network])
+    rows = [[(address_book.title(item), f"wd:book:{item.id}")] for item in saved]
+    if rows:
+        text += texts.WD_ASK_ADDRESS_BOOK
+    markup = keyboards.inline(*rows, [(texts.BUY_CANCEL, "nav:cancel")])
+    if edit:
+        await ctx.edit(text, markup)
+    else:
+        await ctx.reply(text, markup)
+
+
+@router.callback("wd:book:")
+@active_only
+@service_errors
+async def cb_book(ctx: Ctx) -> None:
+    """An address picked from the address book instead of typing it."""
+    assert ctx.user is not None
+    if ctx.fsm.state != S_ADDRESS:
+        await ctx.answer("Кнопка устарела")
+        return
+    try:
+        address_id = int(ctx.cb_data.rsplit(":", 1)[1])
+    except ValueError:
+        await ctx.answer("Кнопка устарела")
+        return
+    network = Network(ctx.fsm.data["network"])
+    async with ctx.container.db() as session:
+        item = await address_book.get(session, ctx.user.id, address_id)
+    if item.network != network:
+        await ctx.answer("Кнопка устарела")
+        return
+    address = await withdrawals.validate_address_for_user(ctx.container, network, item.address)
+    await ctx.answer()
+    await ctx.fsm.set(S_AMOUNT, {"network": network.value, "address": address})
+    await _ask_amount(ctx, network)
 
 
 async def _ask_amount(ctx: Ctx, network: Network) -> None:
@@ -155,12 +200,73 @@ async def cb_confirm(ctx: Ctx) -> None:
     await ctx.answer()
     await ctx.tg.edit_message_reply_markup(ctx.chat_id, message_id)
     w = result.withdrawal
+    async with ctx.container.db() as session:
+        known = await address_book.find(session, ctx.user.id, w.network, w.address)
+    rows = [[(texts.WD_CANCEL_BTN, f"wd:cancel:{w.id}")]]
+    if known is None:
+        rows.append([(texts.WD_SAVE_BTN, f"wd:save:{w.id}")])
     await ctx.reply(
         texts.WD_CREATED.format(
             public_id=w.public_id, to_send=format_usdt(w.amount_to_send), network=NETWORK[w.network]
         ),
-        keyboards.inline([(texts.WD_CANCEL_BTN, f"wd:cancel:{w.id}")]),
+        keyboards.inline(*rows),
     )
+
+
+@router.callback("wd:save:")
+@active_only
+@service_errors
+async def cb_save_address(ctx: Ctx) -> None:
+    """Save the address of the client's own withdrawal to the address book."""
+    assert ctx.user is not None
+    try:
+        wid = int(ctx.cb_data.rsplit(":", 1)[1])
+    except ValueError:
+        await ctx.answer("Кнопка устарела")
+        return
+    async with ctx.container.db() as session:
+        w = await withdrawals.get_for_user(session, ctx.user.id, wid)
+    await address_book.add(ctx.container, ctx.user.id, w.network, w.address)
+    await ctx.answer("Адрес сохранён")
+    await ctx.reply(texts.WD_SAVED)
+
+
+async def _show_book(ctx: Ctx) -> None:
+    assert ctx.user is not None
+    async with ctx.container.db() as session:
+        saved = await address_book.list_for(session, ctx.user.id, ctx.container.config.withdraw_networks)
+    if not saved:
+        await ctx.reply(texts.BOOK_EMPTY)
+        return
+    lines = [
+        f"{i}. {escape_html(item.label) + ' — ' if item.label else ''}<code>{escape_html(item.address)}</code>"
+        f" ({NETWORK[item.network]})"
+        for i, item in enumerate(saved, 1)
+    ]
+    rows = [[(texts.BOOK_DELETE_BTN.format(title=address_book.title(item)), f"ab:del:{item.id}")] for item in saved]
+    await ctx.reply(texts.BOOK_LIST.format(items="\n".join(lines)), keyboards.inline(*rows))
+
+
+@router.command("addresses")
+@active_only
+@service_errors
+async def cmd_addresses(ctx: Ctx) -> None:
+    await _show_book(ctx)
+
+
+@router.callback("ab:del:")
+@active_only
+@service_errors
+async def cb_delete_address(ctx: Ctx) -> None:
+    assert ctx.user is not None
+    try:
+        address_id = int(ctx.cb_data.rsplit(":", 1)[1])
+    except ValueError:
+        await ctx.answer("Кнопка устарела")
+        return
+    await address_book.remove(ctx.container, ctx.user.id, address_id)
+    await ctx.answer("Адрес удалён")
+    await ctx.reply(texts.BOOK_DELETED)
 
 
 @router.callback("wd:cancel:")

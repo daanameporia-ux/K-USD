@@ -39,14 +39,22 @@ export function Home() {
           <Money value={formatUsdt(m.balance)} />
         </div>
         {m.hold !== "0.00" && <div className="hero-sub">В обработке: {formatUsdt(m.hold)}</div>}
-        <div className="hero-chip">
-          {rate.data ? (
-            <>1 USDT = {formatRate(rate.data.effective_rate)}</>
-          ) : rate.loading ? (
-            "Загрузка курса…"
-          ) : (
-            "Курс временно недоступен"
-          )}
+        <div className="hero-chips">
+          <div className="hero-chip" data-testid="rate">
+            {rate.data ? (
+              <>
+                <span className="hero-chip-label">Курс</span>1 USDT = {formatRate(rate.data.rate)}
+              </>
+            ) : rate.loading ? (
+              "Загрузка курса…"
+            ) : (
+              "Курс временно недоступен"
+            )}
+          </div>
+          <div className="hero-chip" data-testid="commission">
+            <span className="hero-chip-label">Ваша комиссия</span>
+            {m.markup_pct}%
+          </div>
         </div>
       </div>
 

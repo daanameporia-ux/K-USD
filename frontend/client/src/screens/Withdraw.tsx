@@ -4,11 +4,15 @@ import { Attempt } from "@shared/api";
 import { formatUsdt, validateUsdt } from "@shared/format";
 import { confirmAction, haptic, readClipboard } from "@shared/telegram";
 import { AsyncButton, ErrorView, Loader, Notice, Row, StatusBadge, errorMessage, useLoad } from "@shared/ui";
-import { api, type WithdrawConfig, type WithdrawPreview, type Withdrawal } from "../api";
-import { AmountField, Footer, Icon, Result, TopBar } from "./common";
+import { api, type SavedAddress, type WithdrawConfig, type WithdrawPreview, type Withdrawal } from "../api";
+import { AmountField, Bubble, Footer, Icon, Result, TopBar } from "./common";
 
 type Step = "network" | "address" | "amount" | "preview" | "done";
 const ORDER: Step[] = ["network", "address", "amount", "preview", "done"];
+
+function shortAddress(address: string): string {
+  return address.length <= 16 ? address : `${address.slice(0, 6)}…${address.slice(-6)}`;
+}
 
 function trimAmount(available: string): string {
   const [i, f = ""] = available.split(".");
@@ -18,8 +22,11 @@ function trimAmount(available: string): string {
 export function Withdraw() {
   const nav = useNavigate();
   const cfg = useLoad(() => api.get<WithdrawConfig>("/api/client/withdrawals/config"));
-  const [step, setStep] = useState<Step>("network");
-  const [network, setNetwork] = useState<"TRC20" | "BEP20" | null>(null);
+  const book = useLoad(() => api.get<{ items: SavedAddress[]; max: number }>("/api/client/addresses"));
+  const [rawStep, setStep] = useState<Step>("network");
+  const [pickedNetwork, setNetwork] = useState<string | null>(null);
+  const [save, setSave] = useState(false);
+  const [label, setLabel] = useState("");
   const [address, setAddress] = useState("");
   const [amount, setAmount] = useState("");
   const [preview, setPreview] = useState<WithdrawPreview | null>(null);
@@ -30,7 +37,14 @@ export function Withdraw() {
   if (cfg.loading) return <Loader />;
   if (cfg.error || !cfg.data) return <ErrorView error={cfg.error} onRetry={() => cfg.reload()} />;
   const c = cfg.data;
+  // A single network is not a choice: the flow starts from the address.
+  const onlyNetwork = c.networks.length === 1 ? c.networks[0].network : null;
+  const network = pickedNetwork ?? onlyNetwork;
+  const step: Step = rawStep === "network" && onlyNetwork ? "address" : rawStep;
+  const steps = onlyNetwork ? ORDER.filter((s) => s !== "network") : ORDER;
   const net = c.networks.find((n) => n.network === network);
+  const saved = (book.data?.items ?? []).filter((a) => a.network === network);
+  const known = saved.find((a) => a.address.toLowerCase() === address.toLowerCase());
   const amountError = validateUsdt(amount);
 
   async function doPreview(value: string) {
@@ -52,27 +66,53 @@ export function Withdraw() {
     }
   }
 
-  async function checkAddress() {
+  async function checkAddress(value: string = address, remember: boolean = save) {
     setError(null);
     try {
       // the preview validates the address (format, contract, blacklist) before asking the amount
       await api.post<WithdrawPreview>("/api/client/withdrawals/preview", {
         network,
-        address,
+        address: value,
         amount: c.min_amount,
       });
-      setStep("amount");
     } catch (e) {
       const msg = errorMessage(e);
-      if (/адрес|контракт|нулев/i.test(msg)) setError(msg);
-      else setStep("amount"); // amount-related errors are shown on the next step
+      // amount-related errors are shown on the next step
+      if (/адрес|контракт|нулев|сет/i.test(msg)) {
+        setError(msg);
+        return;
+      }
+    }
+    if (remember) {
+      try {
+        await api.post<SavedAddress>("/api/client/addresses", { network, address: value, label: label.trim() });
+        setSave(false);
+        setLabel("");
+        void book.reload(true);
+      } catch (e) {
+        setError(errorMessage(e));
+        return;
+      }
+    }
+    setAddress(value);
+    setStep("amount");
+  }
+
+  async function removeSaved(item: SavedAddress) {
+    if (!(await confirmAction(`Удалить адрес ${item.label || shortAddress(item.address)} из книги адресов?`))) return;
+    setError(null);
+    try {
+      await api.del(`/api/client/addresses/${item.id}`);
+      await book.reload(true);
+    } catch (e) {
+      setError(errorMessage(e));
     }
   }
 
   const progress = (
     <div className="steps" aria-hidden>
-      {ORDER.slice(0, 4).map((s, i) => (
-        <span key={s} className={ORDER.indexOf(step) >= i ? "on" : ""} />
+      {steps.slice(0, -1).map((s, i) => (
+        <span key={s} className={steps.indexOf(step) >= i ? "on" : ""} />
       ))}
     </div>
   );
@@ -124,7 +164,41 @@ export function Withdraw() {
       {step === "address" && net && (
         <>
           <h2 className="lead">Куда отправить</h2>
-          <p className="lead-sub">Адрес кошелька USDT в сети {net.label}</p>
+          <p className="lead-sub">
+            Адрес кошелька USDT в сети {net.label}
+            {onlyNetwork && (
+              <>
+                {" "}
+                · доступно <b>{formatUsdt(c.available)}</b>, минимум {formatUsdt(c.min_amount)}
+              </>
+            )}
+          </p>
+          {saved.length > 0 && (
+            <>
+              <div className="section-title">
+                <h3>Книга адресов</h3>
+              </div>
+              <div className="card list" data-testid="address-book">
+                {saved.map((a) => (
+                  <div key={a.id} className="tile-wrap book-row">
+                    <button className="tile" onClick={() => void checkAddress(a.address, false)}>
+                      <Bubble icon="wallet" tone="brand" />
+                      <span className="tile-body">
+                        <span className="tile-title">{a.label || shortAddress(a.address)}</span>
+                        <div className="tile-sub mono">{a.label ? shortAddress(a.address) : a.network_label}</div>
+                      </span>
+                    </button>
+                    <button className="book-del" aria-label={`Удалить адрес ${a.label || a.address}`} onClick={() => void removeSaved(a)}>
+                      <Icon name="cross" size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="section-title">
+                <h3>Новый адрес</h3>
+              </div>
+            </>
+          )}
           <div className="card stack">
             <textarea
               className="input mono"
@@ -140,15 +214,38 @@ export function Withdraw() {
               <Icon name="paste" size={18} />
               Вставить из буфера
             </button>
+            {known ? (
+              <div className="field-hint">Этот адрес уже есть в книге адресов{known.label ? ` — «${known.label}»` : ""}.</div>
+            ) : (
+              <>
+                <label className="check-row">
+                  <input type="checkbox" checked={save} onChange={(e) => setSave(e.target.checked)} data-testid="save-address" />
+                  <span>Сохранить в книгу адресов</span>
+                </label>
+                {save && (
+                  <input
+                    className="input"
+                    type="text"
+                    maxLength={40}
+                    placeholder="Название, например «Мой кошелёк»"
+                    value={label}
+                    aria-label="Название адреса"
+                    onChange={(e) => setLabel(e.target.value)}
+                  />
+                )}
+              </>
+            )}
           </div>
           {error && <Notice tone="bad">{error}</Notice>}
           <Footer>
-            <AsyncButton disabled={!address} onClick={checkAddress}>
+            <AsyncButton disabled={!address} onClick={() => checkAddress()}>
               Далее
             </AsyncButton>
-            <button className="btn btn-ghost" onClick={() => setStep("network")}>
-              Назад
-            </button>
+            {!onlyNetwork && (
+              <button className="btn btn-ghost" onClick={() => setStep("network")}>
+                Назад
+              </button>
+            )}
           </Footer>
         </>
       )}

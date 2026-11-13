@@ -9,6 +9,7 @@ from app.models.misc import (
     NotificationOutbox,
     PaymentCallback,
     Rate,
+    SavedAddress,
     Setting,
     TgUpdate,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "OrderProof",
     "PaymentCallback",
     "Rate",
+    "SavedAddress",
     "Setting",
     "Staff",
     "TgUpdate",

@@ -124,6 +124,20 @@ class AddressBlacklist(Base):
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
 
+class SavedAddress(Base):
+    """The client's address book for withdrawals."""
+
+    __tablename__ = "saved_addresses"
+    __table_args__ = (UniqueConstraint("user_id", "network", "address", name="uq_saved_addresses_user_address"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    network: Mapped[Network] = mapped_column(pg_enum(Network, "network"), nullable=False)
+    address: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
 class NotificationOutbox(Base):
     __tablename__ = "notifications_outbox"
     __table_args__ = (

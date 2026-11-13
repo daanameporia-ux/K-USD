@@ -66,10 +66,19 @@ export interface Quote {
 }
 
 export interface WithdrawConfig {
-  networks: { network: "TRC20" | "BEP20"; label: string; fee: string }[];
+  /** Networks offered for withdrawals (only TRC20 unless the server enables more). */
+  networks: { network: string; label: string; fee: string }[];
   min_amount: string;
   available: string;
   enabled: boolean;
+}
+
+export interface SavedAddress {
+  id: number;
+  network: string;
+  network_label: string;
+  address: string;
+  label: string;
 }
 
 export interface WithdrawPreview {

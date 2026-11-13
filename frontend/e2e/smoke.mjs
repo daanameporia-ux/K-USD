@@ -56,6 +56,7 @@ async function clientSmoke(browser, base) {
   const bodies = [];
   const uploads = [];
   let order = ORDER;
+  const book = [];
   await page.route("**/api/**", async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -80,10 +81,28 @@ async function clientSmoke(browser, base) {
     }
     if (path === "/api/client/orders/1/qr.png") return route.fulfill({ status: 200, contentType: "image/png", body: PNG });
     if (path === "/api/client/orders/1") return json(route, order);
+    if (path === "/api/client/history") return json(route, { items: [], next_cursor: null });
+    if (path === "/api/client/withdrawals/config") {
+      return json(route, { networks: [{ network: "TRC20", label: "TRC-20", fee: "4.00" }], min_amount: "50.00", available: "120.00", enabled: true });
+    }
+    if (path === "/api/client/addresses" && req.method() === "GET") return json(route, { items: book, max: 20 });
+    if (path === "/api/client/addresses" && req.method() === "POST") {
+      const item = { id: book.length + 1, network_label: "TRC-20", ...JSON.parse(req.postData()) };
+      book.unshift(item);
+      return json(route, item);
+    }
+    if (path === "/api/client/withdrawals/preview") {
+      const b = JSON.parse(req.postData());
+      if (!b.address.startsWith("T")) return json(route, { error: { code: "invalid_address", message: "Неверный адрес TRC-20." } }, 400);
+      return json(route, { network: "TRC20", network_label: "TRC-20", address: b.address, amount: b.amount, fee: "4.00", amount_to_send: "46.00" });
+    }
     return json(route, { error: { code: "not_found", message: "Не найдено" } }, 404);
   });
   await page.goto(base + "/app/");
   await page.getByTestId("balance").waitFor();
+  // The exchange rate and the client's commission are shown separately (not one "effective" rate).
+  await page.getByTestId("rate").filter({ hasText: "1 USDT = 100,00" }).waitFor();
+  await page.getByTestId("commission").filter({ hasText: "5%" }).waitFor();
   await page.getByRole("button", { name: "Купить" }).click();
   await page.getByLabel("Сумма в рублях").fill("1000");
   await page.getByTestId("quote").filter({ hasText: "9.50" }).waitFor();
@@ -133,8 +152,30 @@ async function clientSmoke(browser, base) {
     throw new Error(`screenshot upload is wrong: ${JSON.stringify(uploads)}`);
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   if (width > 320) throw new Error(`horizontal scroll at 320px: ${width}`);
+
+  // Withdrawal: one network, so the address is asked right away; a new address is saved to the address book.
+  const ADDR = "TGfb53j2wY8J2F7J5RQhs6gdKpC2j6zsBY";
+  await page.goto(base + "/app/");
+  await page.getByRole("button", { name: "Вывести" }).click();
+  await page.getByText("Куда отправить").waitFor();
+  if (await page.getByText("Выберите сеть").count()) throw new Error("the network step must be skipped for one network");
+  if (await page.getByText("BEP").count()) throw new Error("BEP-20 must not be offered");
+  await page.getByLabel("Адрес кошелька USDT в сети TRC-20").fill(ADDR);
+  await page.getByTestId("save-address").check();
+  await page.getByLabel("Название адреса").fill("Мой кошелёк");
+  await page.getByRole("button", { name: "Далее" }).click();
+  await page.getByLabel("Сумма списания, USDT").waitFor();
+  if (book.length !== 1 || book[0].address !== ADDR || book[0].label !== "Мой кошелёк")
+    throw new Error(`the address was not saved: ${JSON.stringify(book)}`);
+  // Next time the saved address is one tap away.
+  await page.goto(base + "/app/");
+  await page.getByRole("button", { name: "Вывести" }).click();
+  await page.getByTestId("address-book").getByText("Мой кошелёк").click();
+  await page.getByLabel("Сумма списания, USDT").waitFor();
+  const width2 = await page.evaluate(() => document.documentElement.scrollWidth);
+  if (width2 > 320) throw new Error(`horizontal scroll at 320px on withdraw: ${width2}`);
   await page.close();
-  console.log("client smoke: OK (purchase with buyer details, QR, payment screenshot)");
+  console.log("client smoke: OK (purchase with buyer details, QR, payment screenshot; withdrawal with the address book)");
 }
 
 const WITHDRAWAL = {

@@ -23,6 +23,8 @@ os.environ.update(
         "MOCK_PROVIDER_SECRET": "mock-secret-0123456789",
         "TELEGRAM_API_URL": "https://tg.fake",
         "RUN_SCHEDULER": "false",
+        # Production offers TRC20 only; the suite keeps BEP20 on so the code of both networks stays covered.
+        "WITHDRAW_NETWORKS": "TRC20,BEP20",
     }
 )
 
