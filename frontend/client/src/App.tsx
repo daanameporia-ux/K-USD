@@ -4,6 +4,7 @@ import { insideTelegram } from "@shared/telegram";
 import { ApiError } from "@shared/api";
 import { Loader } from "@shared/ui";
 import { login } from "./api";
+import { Footer, Result } from "./screens/common";
 import { Home } from "./screens/Home";
 import { Buy } from "./screens/Buy";
 import { OrderScreen } from "./screens/OrderScreen";
@@ -31,31 +32,32 @@ export function App() {
   if (state === "outside")
     return (
       <div className="page">
-        <div className="card">
-          <h1>Откройте приложение в Telegram</h1>
-          <p className="muted">Это мини-приложение работает внутри Telegram: откройте бота и нажмите «Приложение».</p>
-        </div>
+        <Result icon="bolt" tone="brand" title="Откройте приложение в Telegram">
+          Это мини-приложение работает внутри Telegram: откройте бота и нажмите «Приложение».
+        </Result>
       </div>
     );
   if (state === "offline")
     return (
       <div className="page">
-        <div className="card stack">
-          <h1>Нет связи с сервером</h1>
-          <p className="muted">Проверьте интернет и попробуйте ещё раз.</p>
-          <button className="btn btn-primary btn-block" onClick={start}>
-            Повторить
-          </button>
+        <div className="screen">
+          <Result icon="alert" tone="warn" title="Нет связи с сервером">
+            Проверьте интернет и попробуйте ещё раз.
+          </Result>
+          <Footer>
+            <button className="btn btn-primary btn-block" onClick={start}>
+              Повторить
+            </button>
+          </Footer>
         </div>
       </div>
     );
   if (state === "failed")
     return (
       <div className="page">
-        <div className="card">
-          <h1>Не удалось войти</h1>
-          <p className="muted">Закройте и откройте приложение заново.</p>
-        </div>
+        <Result icon="alert" tone="bad" title="Не удалось войти">
+          Закройте и откройте приложение заново.
+        </Result>
       </div>
     );
   return (

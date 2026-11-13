@@ -5,7 +5,7 @@ import { formatRate, formatRub, formatUsdt, sanitizeRubInput, validateRub } from
 import { haptic } from "@shared/telegram";
 import { AsyncButton, ErrorView, Loader, Notice, Row, errorMessage, useLoad } from "@shared/ui";
 import { api, type Me, type Order, type Quote } from "../api";
-import { TopBar } from "./common";
+import { AmountField, Bubble, Footer, Money, TopBar } from "./common";
 
 const QUICK = [1000, 5000, 10000, 50000];
 
@@ -52,12 +52,14 @@ export function Buy() {
   if (me.error || !me.data) return <ErrorView error={me.error} onRetry={() => me.reload()} />;
   if (me.data.active_order) {
     return (
-      <div>
+      <div className="screen">
         <TopBar title="Покупка" />
         <Notice tone="warn">У вас уже есть активная заявка {me.data.active_order.public_id}.</Notice>
-        <button className="btn btn-primary btn-block" style={{ marginTop: 12 }} onClick={() => nav(`/order/${me.data!.active_order!.id}`)}>
-          Открыть заявку
-        </button>
+        <Footer>
+          <button className="btn btn-primary btn-block" onClick={() => nav(`/order/${me.data!.active_order!.id}`)}>
+            Открыть заявку
+          </button>
+        </Footer>
       </div>
     );
   }
@@ -101,22 +103,29 @@ export function Buy() {
 
   if (confirming && quote) {
     return (
-      <div>
+      <div className="screen">
         <TopBar title="Подтверждение" back={null} />
-        <div className="card stack">
-          <Row label="Сумма к оплате">{formatRub(quote.amount_rub)}</Row>
+        <div className="order-head">
+          <div className="amount-label">Вы платите</div>
+          <div className="order-amount num">
+            <Money value={formatRub(quote.amount_rub)} />
+          </div>
+        </div>
+        <div className="card">
           <Row label="Курс">{formatRate(quote.rate)}</Row>
           <Row label="Комиссия сервиса">
             {quote.markup_pct}% ({formatRub(quote.fee_rub)})
           </Row>
-          <Row label="К зачислению">
-            <b>{formatUsdt(quote.usdt_amount)}</b>
-          </Row>
+          <div className="row row-total">
+            <span className="row-label">К зачислению</span>
+            <span className="row-value">{formatUsdt(quote.usdt_amount)}</span>
+          </div>
         </div>
         {notice && <Notice tone="warn">{notice}</Notice>}
-        <div className="btn-row" style={{ marginTop: 12 }}>
+        <Footer>
+          <AsyncButton onClick={create}>Подтвердить</AsyncButton>
           <button
-            className="btn btn-secondary"
+            className="btn btn-ghost"
             onClick={() => {
               setNotice(null);
               setConfirming(false);
@@ -124,54 +133,65 @@ export function Buy() {
           >
             Изменить
           </button>
-          <AsyncButton onClick={create}>Подтвердить</AsyncButton>
-        </div>
+        </Footer>
       </div>
     );
   }
 
   return (
-    <div>
+    <div className="screen">
       <TopBar title="Купить USDT" />
-      <div className="card stack">
-        <label className="field">
-          <span>
-            Сумма в рублях, от {formatRub(me.data.limits.min_rub)} до {formatRub(me.data.limits.max_rub)}
-          </span>
-          <input
-            className="input input-big"
-            inputMode="numeric"
-            pattern="[0-9 ]*"
-            placeholder="0"
-            value={text}
-            aria-label="Сумма в рублях"
-            onChange={(e) => setText(sanitizeRubInput(e.target.value))}
-          />
-          {check?.error && <div className="field-error">{check.error}</div>}
-        </label>
-        <div className="quick">
-          {QUICK.map((q) => (
-            <button key={q} className="chip" onClick={() => setText(sanitizeRubInput(String(q)))}>
-              {formatRub(q)}
-            </button>
-          ))}
-        </div>
-        <div>
-          <div className="muted small">Вы получите</div>
-          <div className="big-usdt" data-testid="quote">
-            {quoteReady ? formatUsdt(quote!.usdt_amount) : "—"}
-          </div>
-          {quoteReady && quote && (
-            <div className="muted small">
-              Курс {formatRate(quote.rate)}, комиссия {quote.markup_pct}% ({formatRub(quote.fee_rub)})
-            </div>
-          )}
-          {quoteError && <div className="field-error">{quoteError}</div>}
+      <div className="amount">
+        <div className="amount-label">Сумма покупки</div>
+        <AmountField
+          unit="₽"
+          inputMode="numeric"
+          pattern="[0-9 ]*"
+          placeholder="0"
+          value={text}
+          aria-label="Сумма в рублях"
+          onChange={(e) => setText(sanitizeRubInput(e.target.value))}
+        />
+        <div className={`amount-hint ${check?.error ? "error" : ""}`}>
+          {check?.error ?? `от ${formatRub(me.data.limits.min_rub)} до ${formatRub(me.data.limits.max_rub)}`}
         </div>
       </div>
-      <button className="btn btn-primary btn-block" disabled={!quoteReady} onClick={() => quoteReady && setConfirming(true)}>
-        Продолжить
-      </button>
+      <div className="quick">
+        {QUICK.map((q) => (
+          <button
+            key={q}
+            className={`chip ${check?.value === q ? "chip-active" : ""}`}
+            onClick={() => setText(sanitizeRubInput(String(q)))}
+          >
+            {formatRub(q)}
+          </button>
+        ))}
+      </div>
+      <div className="card">
+        <div className="receive">
+          <Bubble icon="down" tone="ok" />
+          <div>
+            <div className="receive-label">Вы получите</div>
+            <div className="big-usdt num" data-testid="quote">
+              {quoteReady ? <Money value={formatUsdt(quote!.usdt_amount)} /> : "—"}
+            </div>
+          </div>
+        </div>
+        {quoteReady && quote && (
+          <div className="receive-meta">
+            <Row label="Курс">{formatRate(quote.rate)}</Row>
+            <Row label="Комиссия">
+              {quote.markup_pct}% ({formatRub(quote.fee_rub)})
+            </Row>
+          </div>
+        )}
+        {quoteError && <div className="field-error">{quoteError}</div>}
+      </div>
+      <Footer>
+        <button className="btn btn-primary btn-block" disabled={!quoteReady} onClick={() => quoteReady && setConfirming(true)}>
+          Продолжить
+        </button>
+      </Footer>
     </div>
   );
 }

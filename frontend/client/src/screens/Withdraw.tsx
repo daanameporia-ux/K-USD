@@ -5,7 +5,7 @@ import { formatUsdt, validateUsdt } from "@shared/format";
 import { confirmAction, haptic, readClipboard } from "@shared/telegram";
 import { AsyncButton, ErrorView, Loader, Notice, Row, StatusBadge, errorMessage, useLoad } from "@shared/ui";
 import { api, type WithdrawConfig, type WithdrawPreview, type Withdrawal } from "../api";
-import { TopBar } from "./common";
+import { AmountField, Footer, Icon, Result, TopBar } from "./common";
 
 type Step = "network" | "address" | "amount" | "preview" | "done";
 const ORDER: Step[] = ["network", "address", "amount", "preview", "done"];
@@ -79,7 +79,7 @@ export function Withdraw() {
 
   if (!c.enabled) {
     return (
-      <div>
+      <div className="screen">
         <TopBar title="Вывод" />
         <Notice tone="warn">Вывод временно приостановлен. Попробуйте позже.</Notice>
       </div>
@@ -87,113 +87,127 @@ export function Withdraw() {
   }
 
   return (
-    <div>
+    <div className="screen">
       <TopBar title="Вывод USDT" />
-      {progress}
+      {step !== "done" && progress}
+
       {step === "network" && (
-        <div className="card stack">
-          <div className="muted small">
+        <>
+          <h2 className="lead">Выберите сеть</h2>
+          <p className="lead-sub">
             Доступно к выводу: <b>{formatUsdt(c.available)}</b>, минимум {formatUsdt(c.min_amount)}
+          </p>
+          <div className="card list">
+            {c.networks.map((n) => (
+              <button
+                key={n.network}
+                className="tile"
+                onClick={() => {
+                  setNetwork(n.network);
+                  setStep("address");
+                }}
+              >
+                <span className={`net-mark net-${n.network}`}>{n.network === "TRC20" ? "TRX" : "BNB"}</span>
+                <span className="tile-body">
+                  <span className="tile-title">{n.label}</span>
+                  <div className="tile-sub">комиссия {formatUsdt(n.fee)}</div>
+                </span>
+                <span className="tile-chevron">
+                  <Icon name="chevron" size={18} />
+                </span>
+              </button>
+            ))}
           </div>
-          {c.networks.map((n) => (
-            <button
-              key={n.network}
-              className="btn btn-secondary net"
-              onClick={() => {
-                setNetwork(n.network);
-                setStep("address");
-              }}
-            >
-              <span>{n.label}</span>
-              <span className="small">комиссия {formatUsdt(n.fee)}</span>
-            </button>
-          ))}
-        </div>
+        </>
       )}
 
       {step === "address" && net && (
-        <div className="card stack">
-          <label className="field">
-            <span>Адрес кошелька USDT в сети {net.label}</span>
+        <>
+          <h2 className="lead">Куда отправить</h2>
+          <p className="lead-sub">Адрес кошелька USDT в сети {net.label}</p>
+          <div className="card stack">
             <textarea
               className="input mono"
-              rows={2}
+              rows={3}
               value={address}
               spellCheck={false}
               autoCapitalize="off"
+              aria-label={`Адрес кошелька USDT в сети ${net.label}`}
               onChange={(e) => setAddress(e.target.value.trim())}
               placeholder={net.network === "TRC20" ? "T…" : "0x…"}
             />
-          </label>
-          <button className="btn btn-ghost" onClick={async () => setAddress((await readClipboard()).trim())}>
-            Вставить из буфера
-          </button>
-          {error && <Notice tone="bad">{error}</Notice>}
-          <div className="btn-row">
-            <button className="btn btn-secondary" onClick={() => setStep("network")}>
-              Назад
+            <button className="btn btn-secondary btn-block" onClick={async () => setAddress((await readClipboard()).trim())}>
+              <Icon name="paste" size={18} />
+              Вставить из буфера
             </button>
+          </div>
+          {error && <Notice tone="bad">{error}</Notice>}
+          <Footer>
             <AsyncButton disabled={!address} onClick={checkAddress}>
               Далее
             </AsyncButton>
-          </div>
-        </div>
+            <button className="btn btn-ghost" onClick={() => setStep("network")}>
+              Назад
+            </button>
+          </Footer>
+        </>
       )}
 
       {step === "amount" && net && (
-        <div className="card stack">
-          <label className="field">
-            <span>Сумма списания, USDT (комиссия {formatUsdt(net.fee)} вычитается из суммы)</span>
-            <input
-              className="input input-big"
+        <>
+          <div className="amount">
+            <div className="amount-label">Сумма списания</div>
+            <AmountField
+              unit="USDT"
               inputMode="decimal"
               value={amount}
               placeholder="0.00"
+              aria-label="Сумма списания, USDT"
               onChange={(e) => setAmount(e.target.value.replace(/[^\d.,]/g, ""))}
             />
-            {amount && amountError && <div className="field-error">{amountError}</div>}
-          </label>
-          <button className="btn btn-ghost" onClick={() => setAmount(trimAmount(c.available))}>
-            Вывести всё ({formatUsdt(c.available)})
-          </button>
-          {error && <Notice tone="bad">{error}</Notice>}
-          <div className="btn-row">
-            <button className="btn btn-secondary" onClick={() => setStep("address")}>
-              Назад
+            <div className={`amount-hint ${amount && amountError ? "error" : ""}`}>
+              {amount && amountError ? amountError : `комиссия ${formatUsdt(net.fee)} вычитается из суммы`}
+            </div>
+          </div>
+          <div className="quick" style={{ gridTemplateColumns: "1fr" }}>
+            <button className="chip" onClick={() => setAmount(trimAmount(c.available))}>
+              Вывести всё ({formatUsdt(c.available)})
             </button>
+          </div>
+          {error && <Notice tone="bad">{error}</Notice>}
+          <Footer>
             <AsyncButton disabled={!amount || !!amountError} onClick={() => doPreview(amount)}>
               Далее
             </AsyncButton>
-          </div>
-        </div>
+            <button className="btn btn-ghost" onClick={() => setStep("address")}>
+              Назад
+            </button>
+          </Footer>
+        </>
       )}
 
       {step === "preview" && preview && (
-        <div className="card stack">
-          <Row label="Сеть">{preview.network_label}</Row>
-          <Row label="Адрес">
-            <span className="mono small">{preview.address}</span>
-          </Row>
-          <Row label="Списывается">{formatUsdt(preview.amount)}</Row>
-          <Row label="Комиссия">{formatUsdt(preview.fee)}</Row>
-          <Row label="К получению">
-            <b>{formatUsdt(preview.amount_to_send)}</b>
-          </Row>
+        <>
+          <h2 className="lead">Проверьте данные</h2>
+          <p className="lead-sub">После подтверждения средства блокируются до исполнения.</p>
+          <div className="card">
+            <Row label="Сеть">{preview.network_label}</Row>
+            <Row label="Адрес">
+              <span className="address">{preview.address}</span>
+            </Row>
+            <Row label="Списывается">{formatUsdt(preview.amount)}</Row>
+            <Row label="Комиссия">{formatUsdt(preview.fee)}</Row>
+            <div className="row row-total">
+              <span className="row-label">К получению</span>
+              <span className="row-value">{formatUsdt(preview.amount_to_send)}</span>
+            </div>
+          </div>
           <Notice tone="warn">
             Убедитесь, что адрес принадлежит сети {preview.network_label}. Перевод в другую сеть приведёт к потере
             средств.
           </Notice>
           {error && <Notice tone="bad">{error}</Notice>}
-          <div className="btn-row">
-            <button
-              className="btn btn-secondary"
-              onClick={() => {
-                setError(null);
-                setStep("amount");
-              }}
-            >
-              Изменить
-            </button>
+          <Footer>
             <AsyncButton
               onClick={async () => {
                 if (!(await confirmAction(`Вывести ${preview.amount_to_send} USDT на ${preview.address}?`))) return;
@@ -214,38 +228,54 @@ export function Withdraw() {
             >
               Подтвердить
             </AsyncButton>
-          </div>
-        </div>
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setError(null);
+                setStep("amount");
+              }}
+            >
+              Изменить
+            </button>
+          </Footer>
+        </>
       )}
 
       {step === "done" && result && (
-        <div className="card stack">
-          <h2>Заявка {result.public_id} создана</h2>
-          <StatusBadge status={result.status} label={result.status_label} />
-          <p>
+        <>
+          <Result
+            icon={result.status === "cancelled" ? "cross" : "check"}
+            tone={result.status === "cancelled" ? "info" : "ok"}
+            title={`Заявка ${result.public_id} создана`}
+          >
             К отправке {formatUsdt(result.amount_to_send)} ({result.network_label}). Средства заблокированы до
             исполнения. Пока заявка в очереди, её можно отменить.
-          </p>
+          </Result>
+          <div style={{ textAlign: "center", marginBottom: 12 }}>
+            <StatusBadge status={result.status} label={result.status_label} />
+          </div>
           {error && <Notice tone="bad">{error}</Notice>}
-          {result.status === "pending" && (
-            <AsyncButton
-              variant="danger"
-              onClick={async () => {
-                if (!(await confirmAction("Отменить вывод?"))) return;
-                try {
-                  setResult(await api.post<Withdrawal>(`/api/client/withdrawals/${result.id}/cancel`));
-                } catch (e) {
-                  setError(errorMessage(e));
-                }
-              }}
-            >
-              Отменить вывод
-            </AsyncButton>
-          )}
-          <button className="btn btn-secondary" onClick={() => nav("/")}>
-            На главную
-          </button>
-        </div>
+          <Footer>
+            <button className="btn btn-primary" onClick={() => nav("/")}>
+              На главную
+            </button>
+            {result.status === "pending" && (
+              <AsyncButton
+                variant="danger"
+                onClick={async () => {
+                  if (!(await confirmAction("Отменить вывод?"))) return;
+                  try {
+                    setResult(await api.post<Withdrawal>(`/api/client/withdrawals/${result.id}/cancel`));
+                  } catch (e) {
+                    setError(errorMessage(e));
+                  }
+                }}
+              >
+                Отменить вывод
+              </AsyncButton>
+            )}
+          </Footer>
+        </>
       )}
     </div>
   );

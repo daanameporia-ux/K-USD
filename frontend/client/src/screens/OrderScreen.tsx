@@ -4,15 +4,26 @@ import { formatCountdown, formatRub, formatUsdt } from "@shared/format";
 import { confirmAction, haptic, openLink } from "@shared/telegram";
 import { AsyncButton, ErrorView, Loader, Notice, Row, StatusBadge, errorMessage, useLoad } from "@shared/ui";
 import { api, type Order } from "../api";
-import { TopBar } from "./common";
+import { Footer, Icon, Money, Result, TopBar, type IconName } from "./common";
 
-const FINAL: Record<string, { tone: "ok" | "warn" | "bad" | "info"; text: (o: Order) => string }> = {
-  paid: { tone: "ok", text: (o) => `Оплата получена, зачислено ${formatUsdt(o.credited_usdt ?? o.usdt_amount)}.` },
-  expired: { tone: "warn", text: () => "Заявка истекла. Если нужно, создайте новую." },
-  cancelled: { tone: "info", text: () => "Заявка отменена." },
-  failed: { tone: "bad", text: () => "Не удалось создать платёж, попробуйте ещё раз." },
-  review: { tone: "warn", text: () => "Платёж получен и проходит проверку. Мы сообщим результат." },
-  rejected: { tone: "bad", text: () => "Заявка отклонена после проверки." },
+type Final = { tone: "ok" | "warn" | "bad" | "info"; icon: IconName; title: string; text: (o: Order) => string };
+const FINAL: Record<string, Final> = {
+  paid: {
+    tone: "ok",
+    icon: "check",
+    title: "Оплата получена",
+    text: (o) => `На баланс зачислено ${formatUsdt(o.credited_usdt ?? o.usdt_amount)}.`,
+  },
+  expired: { tone: "warn", icon: "clock", title: "Время вышло", text: () => "Заявка истекла. Если нужно, создайте новую." },
+  cancelled: { tone: "info", icon: "cross", title: "Отменено", text: () => "Заявка отменена." },
+  failed: { tone: "bad", icon: "alert", title: "Ошибка", text: () => "Не удалось создать платёж, попробуйте ещё раз." },
+  review: {
+    tone: "warn",
+    icon: "shield",
+    title: "Проверяем платёж",
+    text: () => "Платёж получен и проходит проверку. Мы сообщим результат.",
+  },
+  rejected: { tone: "bad", icon: "cross", title: "Отклонено", text: () => "Заявка отклонена после проверки." },
 };
 
 export function OrderScreen() {
@@ -98,8 +109,29 @@ export function OrderScreen() {
   const final = FINAL[o.status];
   const qrUrl = qr && qr.id === id ? qr.url : null;
 
+  const cancel = (
+    <AsyncButton
+      variant="danger"
+      onClick={async () => {
+        if (!(await confirmAction(`Отменить заявку ${o.public_id}?`))) return;
+        setError(null);
+        acting.current = true;
+        try {
+          order.setData(await api.post<Order>(`/api/client/orders/${o.id}/cancel`));
+        } catch (e) {
+          setError(errorMessage(e));
+          void order.reload(true);
+        } finally {
+          acting.current = false;
+        }
+      }}
+    >
+      Отменить заявку
+    </AsyncButton>
+  );
+
   return (
-    <div>
+    <div className="screen">
       <TopBar title={`Заявка ${o.public_id}`} />
       {order.error ? (
         <Notice tone="warn">
@@ -109,17 +141,22 @@ export function OrderScreen() {
           </span>
         </Notice>
       ) : null}
-      <div className="card stack">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span className="big-usdt">{formatRub(o.amount_rub)}</span>
+
+      {final ? (
+        <Result icon={final.icon} tone={final.tone} title={final.title}>
+          {final.text(o)}
+        </Result>
+      ) : (
+        <div className="order-head">
+          <div className="order-amount num">
+            <Money value={formatRub(o.amount_rub)} />
+          </div>
           <StatusBadge status={o.status} label={o.status_label} />
         </div>
-        <Row label="Будет зачислено">{formatUsdt(o.usdt_amount)}</Row>
-        <Row label="Курс">{o.rate} ₽</Row>
-      </div>
+      )}
 
       {o.status === "pending" && (
-        <div className="card stack" data-testid="payment">
+        <div className="card qr-card" data-testid="payment">
           {qrError ? (
             <div className="state state-error" role="alert" data-testid="qr-error">
               <p>Не удалось загрузить QR-код. Можно оплатить кнопкой «Оплатить» или попробовать ещё раз.</p>
@@ -141,46 +178,43 @@ export function OrderScreen() {
             <Loader text="Готовим QR-код…" />
           )}
           <div>
-            <div className="muted small" style={{ textAlign: "center" }}>
-              Оплатить в течение
-            </div>
-            <div className="timer">{formatCountdown(left)}</div>
+            <span className="timer-pill">
+              <Icon name="clock" size={16} />
+              Оплатить в течение <span className="timer num">{formatCountdown(left)}</span>
+            </span>
           </div>
-          <button className="btn btn-primary btn-block" onClick={() => o.qr_url && openLink(o.qr_url)}>
-            Оплатить
-          </button>
-          <p className="muted small">
-            Отсканируйте QR-код в приложении банка или нажмите «Оплатить». Оплатите ровно {formatRub(o.amount_rub)}
+          <p className="help">
+            Отсканируйте QR-код в приложении банка или нажмите «Оплатить». Оплатите ровно {formatRub(o.amount_rub)}{" "}
             одним платежом. Статус обновится автоматически.
           </p>
-          {error && <Notice tone="bad">{error}</Notice>}
-          <AsyncButton
-            variant="danger"
-            onClick={async () => {
-              if (!(await confirmAction(`Отменить заявку ${o.public_id}?`))) return;
-              setError(null);
-              acting.current = true;
-              try {
-                order.setData(await api.post<Order>(`/api/client/orders/${o.id}/cancel`));
-              } catch (e) {
-                setError(errorMessage(e));
-                void order.reload(true);
-              } finally {
-                acting.current = false;
-              }
-            }}
-          >
-            Отменить заявку
-          </AsyncButton>
         </div>
       )}
       {o.status === "creating" && <Loader text="Создаём платёж…" />}
-      {final && <Notice tone={final.tone}>{final.text(o)}</Notice>}
-      {!active && (
-        <button className="btn btn-secondary btn-block" style={{ marginTop: 12 }} onClick={() => nav("/")}>
-          На главную
-        </button>
-      )}
+
+      <div className="card">
+        {final && <Row label="Сумма">{formatRub(o.amount_rub)}</Row>}
+        <Row label={o.status === "paid" ? "Зачислено" : "Будет зачислено"}>
+          {formatUsdt(o.status === "paid" ? (o.credited_usdt ?? o.usdt_amount) : o.usdt_amount)}
+        </Row>
+        <Row label="Курс">{o.rate} ₽</Row>
+      </div>
+
+      {error && <Notice tone="bad">{error}</Notice>}
+      <Footer>
+        {o.status === "pending" && (
+          <>
+            <button className="btn btn-primary btn-block" onClick={() => o.qr_url && openLink(o.qr_url)}>
+              Оплатить
+            </button>
+            {cancel}
+          </>
+        )}
+        {!active && (
+          <button className="btn btn-primary btn-block" onClick={() => nav("/")}>
+            На главную
+          </button>
+        )}
+      </Footer>
     </div>
   );
 }
